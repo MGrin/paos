@@ -309,13 +309,31 @@ pub fn pid_alive(pid: Option<i64>) -> Option<bool> {
     let pid = pid.filter(|p| *p > 0)?;
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
+    }
+    // errno lives behind a different symbol on each platform: `__error` on macOS and the
+    // BSDs, `__errno_location` on glibc. Declaring only the first one made this crate
+    // link on the maintainer's Mac and fail at LINK TIME on Linux, with an undefined
+    // reference to `__error` — so paos did not build on Linux at all, while the README
+    // said Linux was supported. Found by building in a container, which is the only
+    // place that could have found it.
+    #[cfg(target_os = "linux")]
+    extern "C" {
+        fn __errno_location() -> *mut i32;
+    }
+    #[cfg(not(target_os = "linux"))]
+    extern "C" {
         fn __error() -> *mut i32;
     }
+    #[cfg(target_os = "linux")]
+    unsafe fn errno() -> i32 { *__errno_location() }
+    #[cfg(not(target_os = "linux"))]
+    unsafe fn errno() -> i32 { *__error() }
+
     let rc = unsafe { kill(pid as i32, 0) };
     if rc == 0 {
         return Some(true);
     }
-    match unsafe { *__error() } {
+    match unsafe { errno() } {
         3 => Some(false),  // ESRCH — genuinely gone
         1 => None,         // EPERM — it exists but is not ours to signal
         _ => None,

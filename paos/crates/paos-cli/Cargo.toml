@@ -1,0 +1,31 @@
+[package]
+name = "paos-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "paos"
+path = "src/main.rs"
+
+[dependencies]
+paos-proto = { path = "../paos-proto" }
+paos-store = { path = "../paos-store" }
+paos-secrets = { path = "../paos-secrets" }
+# For the degraded path ONLY: spooling a write, and answering a recall read-only, when the
+# sandbox blocks the socket. The CLI still never WRITES SQLite directly.
+paos-memory = { path = "../paos-memory" }
+paos-tasks = { path = "../paos-tasks" }
+paos-operator = { path = "../paos-operator" }
+# Bus reads on the degraded path: the roster, the handle binding, and the flock listener
+# probe. Reads only — nothing here writes.
+paos-bus = { path = "../paos-bus" }
+paos-presence = { path = "../paos-presence" }
+# Transcript ETL, for `paos trajectory` and the lessons/dream passes that read through it.
+paos-trajectory = { path = "../paos-trajectory" }
+paos-librarian = { path = "../paos-librarian" }
+# The bash-guard's catastrophic patterns. A hand-rolled matcher that diverged
+# would fail OPEN on a real `rm -rf /` — the one direction it must never fail in.
+regex = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }

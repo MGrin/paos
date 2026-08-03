@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/paos-proto",
+    "crates/paos-store",
+    "crates/paos-secrets",
+    "crates/paos-bus",
+    "crates/paos-presence",
+    "crates/paos-tasks",
+    "crates/paos-memory",
+    "crates/paos-librarian",
+    "crates/paos-trajectory",
+    "crates/paos-web",
+    "crates/paos-operator",
+    "crates/paosd",
+    "crates/paos-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` keeps object keys in the order they were parsed rather than sorting
+# them. paos-trajectory re-serializes tool inputs it parsed out of a transcript, and
+# Python's json preserves insertion order — without this an Edit call's
+# {file_path, old_string, new_string} comes back out alphabetized, so every rendered
+# tool call differs from the Python this is meant to replace byte-for-byte.
+# Safe workspace-wide: no other crate re-serializes a parsed Value. The spool builds
+# payloads with json! and the daemon reads them back by field name.
+serde_json = { version = "1", features = ["preserve_order"] }
+# `bundled` compiles SQLite into the binary: no system libsqlite3, no dylib next to
+# the executable, and a version we control. This is what keeps `paos` a single file.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# The review-queue screening rules are three alternation-heavy patterns whose MATCHED
+# TEXT is quoted back to the human ("matched 'all tests pass'"), so both the boolean and
+# the span have to agree with Python's `re`. Hand-rolling leftmost-first alternation is
+# exactly where a port drifts silently, and this crate is leftmost-first like Perl/Python.
+# Pure Rust, no C toolchain, so it does not cost the single-binary property.
+regex = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

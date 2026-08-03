@@ -1,0 +1,10 @@
+[package]
+name = "paos-presence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+paos-store = { path = "../paos-store" }
+paos-tasks = { path = "../paos-tasks" }
+rusqlite.workspace = true

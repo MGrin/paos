@@ -1,0 +1,18 @@
+[package]
+name = "paos-operator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+paos-store = { path = "../paos-store" }
+paos-tasks = { path = "../paos-tasks" }
+# An answered escalation has to REACH the session that asked, and the bus is the only
+# thing a session listens to. No cycle: paos-bus does not depend on this crate.
+paos-bus = { path = "../paos-bus" }
+# Resolving the bot token reference. The bridge reads a POINTER out of paos_config and
+# dereferences it here, so the token is never in the database.
+paos-secrets = { path = "../paos-secrets" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true

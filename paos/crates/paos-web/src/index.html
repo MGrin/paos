@@ -1,0 +1,858 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>paos</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/tasks.css">
+<style>
+  :root {
+    --bg:#0d0f12; --panel:#14171c; --panel2:#191d23; --line:#232830; --fg:#e6e9ef;
+    --dim:#8b93a1; --accent:#6ea8fe; --good:#5ec98a; --warn:#e0b341; --bad:#e8736b;
+    font-synthesis: none;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.55 ui-sans-serif,-apple-system,"SF Pro Text",system-ui,sans-serif;
+  }
+  /* Left rail. A vertical list gives each destination a full-width hit target and
+     leaves room for the count beside its name, which a horizontal strip could not fit
+     without crowding. */
+  .shell { display:grid; grid-template-columns:186px 1fr; min-height:100vh; }
+  aside {
+    border-right:1px solid var(--line); padding:14px 12px;
+    display:flex; flex-direction:column; gap:3px;
+    position:sticky; top:0; height:100vh; background:var(--bg);
+  }
+  aside b { letter-spacing:.02em; padding:0 9px 12px; }
+  aside #status { padding:0 9px; margin-top:auto; }
+  nav { display:flex; flex-direction:column; gap:2px; }
+  nav button {
+    background:none; border:1px solid transparent; color:var(--dim);
+    padding:6px 9px; border-radius:7px; cursor:pointer; font:inherit;
+    text-align:left; width:100%;
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+  }
+  nav button:hover { color:var(--fg); }
+  nav button[aria-current="true"] { color:var(--fg); background:var(--panel); border-color:var(--line); }
+  .badge {
+    background:var(--accent); color:#04101f; border-radius:9px;
+    padding:0 6px; font-size:11px; font-weight:600;
+  }
+  main { padding:20px 24px; max-width:1100px; }
+  h2 {
+    font-size:12px; text-transform:uppercase; letter-spacing:.08em;
+    color:var(--dim); font-weight:600; margin:20px 0 9px;
+  }
+  h2:first-child { margin-top:0; }
+  .row {
+    display:grid; grid-template-columns:auto 1fr; gap:14px;
+    padding:10px 12px; border:1px solid var(--line); border-radius:9px;
+    background:var(--panel); margin-bottom:8px; align-items:baseline;
+  }
+  .k { color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap; font-size:12px; }
+  .txt { white-space:pre-wrap; overflow-wrap:anywhere; }
+  /* Long facts are exactly the ones worth reading in full, but they must not push
+     everything else off the screen. Clamp, click to open. */
+  .clip { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; cursor:zoom-in; }
+  .clip.open { -webkit-line-clamp:unset; cursor:zoom-out; }
+  input {
+    width:100%; padding:9px 11px; border-radius:9px; border:1px solid var(--line);
+    background:var(--panel); color:var(--fg); font:inherit; margin-bottom:12px;
+  }
+  input:focus { outline:none; border-color:var(--accent); }
+  button.act {
+    font:inherit; font-size:12px; padding:4px 10px; border-radius:7px; cursor:pointer;
+    border:1px solid var(--line); background:var(--panel2); color:var(--fg);
+  }
+  button.act:hover { border-color:var(--accent); color:var(--accent); }
+  button.act.danger:hover { border-color:var(--bad); color:var(--bad); }
+  button.act[disabled] { opacity:.45; cursor:default; }
+  button.primary { background:var(--accent); border:none; color:#04101f; padding:5px 12px; }
+  .acts { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; align-items:center; }
+  .grid { display:grid; grid-template-columns:245px 1fr; gap:16px; align-items:start; }
+  .side { display:flex; justify-content:space-between; gap:8px; padding:7px 10px;
+          border-radius:8px; cursor:pointer; border:1px solid transparent; }
+  /* Project names run long (flarexyz_motion_client_dashboard_ops); let the name
+     ellipsize rather than pushing its own count out of the panel. */
+  .side > span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .side > span:last-child { flex:none; }
+  .side:hover { background:var(--panel2); }
+  .side[aria-current="true"] { background:var(--panel); border-color:var(--line); }
+  .tier { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:12px 0 4px; }
+  .tabs { display:flex; gap:4px; margin-bottom:14px; }
+  .tabs button {
+    font:inherit; padding:5px 13px; border-radius:8px; cursor:pointer;
+    border:1px solid var(--line); background:none; color:var(--dim);
+  }
+  .tabs button[aria-current="true"] { background:var(--panel); color:var(--fg); }
+  /* A brief already delivered is history: present, findable, and visibly not the thing
+     to read now. */
+  .md-h1, .md-h2 { font-weight:600; font-size:14px; margin:12px 0 4px; }
+  .md-h3, .md-h4 { font-weight:600; color:var(--dim); font-size:12px;
+                   text-transform:uppercase; letter-spacing:.06em; margin:10px 0 3px; }
+  .md-li { padding-left:14px; text-indent:-9px; }
+  .md-li::before { content:"· "; color:var(--dim); }
+  /* Same shape as the desktop widget: a thin track with a coloured fill, one per
+     window, so usage is read at a glance instead of parsed from numbers. */
+  .bar { height:6px; border-radius:4px; background:var(--panel2); overflow:hidden; margin:3px 0; }
+  .bar > i { display:block; height:100%; border-radius:4px; }
+  .bar-ok > i { background:var(--good); }
+  .bar-warning > i { background:var(--warn); }
+  .bar-critical > i { background:var(--bad); }
+  .meter { display:grid; grid-template-columns:44px 1fr auto; gap:10px; align-items:center;
+           margin-top:6px; }
+  .meter .lbl { color:var(--dim); font-size:12px; }
+  .meter .val { font-variant-numeric:tabular-nums; font-size:12px; min-width:34px; text-align:right; }
+  /* The live account, unmistakably. A caret in a monospace column was not enough — it
+     reads as decoration next to three near-identical rows. */
+  .live { border-color:var(--accent); box-shadow:inset 3px 0 0 var(--accent); }
+  .livetag { background:var(--accent); color:#04101f; border-radius:4px;
+             padding:1px 6px; font-size:10px; font-weight:700; letter-spacing:.04em; }
+  .past { opacity:.55; }
+  .past:hover { opacity:1; }
+  .card-lg { border:1px solid var(--line); border-radius:11px; background:var(--panel);
+             padding:15px 17px; margin-bottom:14px; }
+  .card-lg h3 { margin:0 0 4px; font-size:15px; }
+  .set { display:grid; grid-template-columns:1fr auto; gap:14px; align-items:center;
+         padding:11px 13px; border:1px solid var(--line); border-radius:9px;
+         background:var(--panel); margin-bottom:8px; }
+  .set .lab { font-weight:500; }
+  .set input, .set select { margin:0; width:auto; min-width:120px; }
+  .set input[type=checkbox] { min-width:0; width:18px; height:18px; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+  .stat { flex:1; min-width:118px; border:1px solid var(--line); border-radius:10px;
+          background:var(--panel); padding:10px 12px; }
+  .stat .v { font-size:22px; font-variant-numeric:tabular-nums; }
+  .stat .l { color:var(--dim); font-size:12px; }
+  .ok { color:var(--good); } .warn { color:var(--warn); } .fail { color:var(--bad); }
+  .pill { font-size:11px; padding:1px 7px; border-radius:20px; border:1px solid var(--line); color:var(--dim); }
+  .empty { color:var(--dim); padding:22px 0; }
+  .fix { color:var(--dim); font-size:12px; margin-top:3px; }
+  .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
+           background:var(--panel); border:1px solid var(--line); border-radius:9px;
+           padding:9px 15px; z-index:20; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#fbfbfd; --panel:#fff; --panel2:#f3f4f7; --line:#e3e6ec; --fg:#15181d; --dim:#6b7280; }
+    .badge { color:#fff; }
+  }
+  @media (max-width:760px) {
+    .grid { grid-template-columns:1fr; }
+    /* Narrow: the rail becomes a scrolling strip rather than eating half the width. */
+    .shell { grid-template-columns:1fr; }
+    aside {
+      position:static; height:auto; flex-direction:row; align-items:center;
+      border-right:none; border-bottom:1px solid var(--line); overflow-x:auto;
+    }
+    aside b { padding:0 10px 0 0; }
+    aside #status { display:none; }
+    nav { flex-direction:row; }
+    nav button { width:auto; }
+    main { padding:16px; }
+  }
+</style>
+
+<div class="shell">
+<aside>
+  <b>paos</b>
+  <nav>
+    <button data-view="home" aria-current="true">dashboard<span class="badge" id="bInbox" hidden></span></button>
+    <button data-view="memory">memory<span class="badge" id="bDreams" hidden></span></button>
+    <button data-view="tasks">tasks<span class="badge" id="tasks-badge" style="display:none"></span></button>
+    <button data-view="sessions">sessions</button>
+    <button data-view="standup">standup</button>
+    <button data-view="accounts">accounts</button>
+    <button data-view="settings">settings</button>
+  </nav>
+  <span class="k" id="status">connecting…</span>
+</aside>
+<main id="app"></main>
+</div>
+
+<script>
+// Dependency-free, and textContent everywhere — NEVER innerHTML. Every string rendered
+// here (memory facts, bus messages, standup bodies) is arbitrary text written by other
+// sessions, so the safe primitive is the only primitive.
+const app = document.getElementById('app');
+const statusEl = document.getElementById('status');
+let view = 'home';
+const state = { brain: null, q: '', room: null, side: null,
+                memTab: 'facts', sessTab: 'fleet' };
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const empty = (msg) => app.replaceChildren(el('div', 'empty', msg));
+
+/** A key/body row, the workhorse layout. `actions` is an element appended under body. */
+function row(key, text, opts = {}) {
+  const r = el('div', 'row');
+  const k = el('div', 'k', key);
+  if (opts.tag) k.append(' ', el('span', opts.tagCls || 'pill', opts.tag));
+  const body = el('div');
+  if (text !== undefined) {
+    const t = el('div', opts.clip ? 'txt clip' : 'txt', text);
+    if (opts.clip) t.onclick = () => t.classList.toggle('open');
+    body.append(t);
+  }
+  if (opts.sub) body.append(el('div', 'fix', opts.sub));
+  if (opts.actions) body.append(opts.actions);
+  r.append(k, body);
+  return r;
+}
+
+async function get(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(path + ' -> ' + r.status);
+  return r.json();
+}
+async function post(path, data) {
+  // Form-encoded: the daemon parses these with a tiny field() helper rather than
+  // linking a JSON body parser.
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(data).toString(),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function toast(msg) {
+  const t = el('div', 'toast', msg);
+  document.body.append(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+/** Render the small markdown subset a standup brief actually uses: ## / ### headers and
+    "- " bullets. Deliberately not a markdown library — text still lands via textContent,
+    so a brief cannot inject markup no matter what a session wrote into it. */
+function markdown(text) {
+  const box = el('div');
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trimEnd();
+    if (!line.trim()) { box.append(el('div', null, ' ')); continue; }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      const n = el('div', 'md-h' + h[1].length, h[2]);
+      box.append(n);
+      continue;
+    }
+    const b = line.match(/^\s*[-*]\s+(.*)$/);
+    box.append(el('div', b ? 'md-li' : 'txt', b ? b[1] : line));
+  }
+  return box;
+}
+
+/** Relative time: "is this recent?" is the only question ever asked of a timestamp
+    here, and a UTC stamp makes you do arithmetic to answer it. */
+function ago(ts) {
+  if (!ts) return '';
+  const t = Date.parse(ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z');
+  if (isNaN(t)) return String(ts).slice(0, 16);
+  const s = (Date.now() - t) / 1000;
+  if (s < 90) return 'just now';
+  if (s < 5400) return Math.round(s / 60) + 'm ago';
+  if (s < 172800) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+/** The operator-mode switch. */
+function modeRow(d) {
+  const r = el('div', 'row');
+  const btns = el('div', 'acts');
+  btns.style.marginTop = '0';
+  for (const m of ['attended', 'autonomous', 'away']) {
+    const b = el('button', 'act' + (d.mode === m ? ' primary' : ''), m);
+    b.onclick = async () => { await post('/api/mode', { mode: m }); render(); };
+    btns.append(b);
+  }
+  r.append(el('div', 'k', 'mode'), btns);
+  return r;
+}
+
+/** Everything waiting on a human decision, as rows.
+ *
+ *  Lives here rather than in a view because it belongs on the DASHBOARD: as its own tab
+ *  it was empty most of the time, which is how you learn a page has nothing for you. */
+function inboxRows(d) {
+  const out = [];
+  for (const e of d.escalations) {
+    const actions = el('div', 'acts');
+    const answer = async (text) => {
+      try { await post('/api/answer', { id: e.id, text }); render(); }
+      catch (err) { toast(String(err.message || err)); }
+    };
+    // The options a session offered become one-tap answers, same as in Telegram.
+    (e.options || '').split(',').filter(Boolean).forEach(opt => {
+      const b = el('button', 'act primary', opt.trim());
+      b.onclick = () => answer(opt.trim());
+      actions.append(b);
+    });
+    const free = el('input');
+    free.placeholder = 'type an answer, press enter';
+    free.style.cssText = 'flex:1;min-width:180px;margin:0';
+    free.onkeydown = (ev) => { if (ev.key === 'Enter' && free.value.trim()) answer(free.value.trim()); };
+    actions.append(free);
+    // DISMISS — close it WITHOUT answering. Some questions stop being questions: all four
+    // sitting here on 2026-08-01 came from sessions that had since been archived, so an
+    // answer would have reached nobody, and the bus rules forbid answering on a human's
+    // behalf anyway. There was no legitimate way to clear them, so they counted as work
+    // forever — and an inbox you cannot empty stops being read.
+    const dismiss = el('button', 'act', 'dismiss');
+    dismiss.title = 'close without answering \u2014 the question stays queryable, it just stops counting as work';
+    dismiss.onclick = async () => {
+      try { await post('/api/dismiss', { id: e.id }); render(); }
+      catch (err) { toast(String(err.message || err)); }
+    };
+    actions.append(dismiss);
+    out.push(row('❓ ' + e.session, e.question, { actions }));
+  }
+  for (const p of d.parked) {
+    const actions = el('div', 'acts');
+    const b = el('button', 'act', 'resolve');
+    b.onclick = async () => { await post('/api/resolve-park', { id: p.id }); render(); };
+    actions.append(b);
+    out.push(row('🅿️ ' + p.session, p.note, { actions }));
+  }
+  for (const a of d.attention) {
+    // Give it something to DO. A row you can only read does not "need you".
+    const actions = el('div', 'acts');
+    const act = (label, action, confirmText) => {
+      const b = el('button', 'act' + (action === 'retire' ? ' danger' : ''), label);
+      b.onclick = async () => {
+        if (confirmText && !confirm(confirmText)) return;
+        b.disabled = true;
+        try { await post('/api/session', { name: a.name, action }); toast(label + 'd ' + a.name); render(); }
+        catch (e) { toast(String(e.message || e)); b.disabled = false; }
+      };
+      actions.append(b);
+    };
+    act('wake', 'wake');
+    act('retire', 'retire', 'Retire ' + a.name + '? It stops appearing and drops its rooms.');
+    out.push(row((a.kind === 'deaf' ? '⚠ DEAF' : '⏳ stale') + '  ' + a.name,
+                 a.status || '(idle)', { actions }));
+  }
+  return out;
+}
+
+const views = {
+  /** Home answers the two questions the old dashboard could not: is anything quietly
+      broken, and what is waiting on me. */
+  async home() {
+    const [checks, brains, props, inbox] = await Promise.all([
+      get('/api/doctor'), get('/api/brains'), get('/api/proposals'), get('/api/inbox'),
+    ]);
+    const facts = brains.reduce((a, b) => a + Number(b.facts || 0), 0);
+    const waiting = inbox.escalations.length + inbox.parked.length;
+
+    const stats = el('div', 'stats');
+    const stat = (v, l) => {
+      const d = el('div', 'stat');
+      d.append(el('div', 'v', String(v)), el('div', 'l', l));
+      return d;
+    };
+    stats.append(stat(facts, 'facts remembered'), stat(brains.length, 'brains'),
+                 stat(props.length, 'awaiting review'), stat(waiting, 'needs an answer'));
+
+    const out = [stats, el('h2', null, 'system')];
+    for (const c of checks) {
+      const mark = c.level === 'ok' ? '✓' : c.level === 'warn' ? '!' : '✗';
+      const r = row(mark + ' ' + c.name, c.detail, { sub: c.fix || undefined });
+      r.firstElementChild.classList.add(c.level);
+      out.push(r);
+    }
+    // ANSWER escalations here rather than on a page of their own. As a separate tab it
+    // was empty most of the time, which taught you there was nothing to do there.
+    out.push(el('h2', null, 'needs you'));
+    out.push(modeRow(inbox));
+    const needs = inboxRows(inbox);
+    if (props.length) {
+      const a = el('div', 'acts');
+      const b = el('button', 'act primary', 'review');
+      b.onclick = () => { state.memTab = 'dreams'; go('memory'); };
+      a.append(b);
+      needs.push(row('💤', props.length + ' memory change(s) proposed — nothing is stored until you approve',
+                     { actions: a }));
+    }
+    if (!needs.length) {
+      out.push(el('div', 'empty', '✓ nothing needs you'));
+    } else {
+      out.push(...needs);
+    }
+
+    // Accounts, compactly: a weekly window about to close stops every session at once,
+    // so it belongs on the page you actually open.
+    try {
+      const payload = await get('/api/accounts');
+      if (payload.accounts && payload.accounts.length) {
+        out.push(el('h2', null, 'claude accounts'));
+        const ordered = [...payload.accounts].sort((x, y) => (y.active === true) - (x.active === true));
+        for (const a of ordered) {
+          const r = row((a.active ? 'ACTIVE  ' : '') + a.slot, undefined,
+                        { sub: '5h ' + Math.round(a.fiveHour) + '%  ·  week ' +
+                               Math.round(a.sevenDay) + '%' });
+          if (a.active) r.classList.add('live');
+          r.firstElementChild.classList.add(
+            a.sevenDayBand === 'critical' ? 'fail' : a.sevenDayBand === 'warning' ? 'warn' : 'ok');
+          out.push(r);
+        }
+      }
+    } catch { /* the dashboard must render even if the usage helper is missing */ }
+
+    app.replaceChildren(...out);
+  },
+
+  /** Memory and its review queue are the same subject; two rail entries for it pushed
+      everything else down. Sub-tabs, with the pending count on the tab that has them. */
+  async memory() {
+    const nProps = (await get('/api/proposals')).length;
+    const tabs = el('div', 'tabs');
+    for (const [key, label] of [['facts', 'facts'], ['dreams', 'proposed' + (nProps ? ' (' + nProps + ')' : '')]]) {
+      const b = el('button', null, label);
+      if (key === state.memTab) b.setAttribute('aria-current', 'true');
+      b.onclick = () => { state.memTab = key; render(); };
+      tabs.append(b);
+    }
+    if (state.memTab === 'dreams') {
+      await views.dreams();
+      app.prepend(tabs);
+      return;
+    }
+    await views.facts();
+    app.prepend(tabs);
+  },
+
+  async sessions() {
+    const tabs = el('div', 'tabs');
+    for (const key of ['fleet', 'bus', 'activity']) {
+      const b = el('button', null, key);
+      if (key === state.sessTab) b.setAttribute('aria-current', 'true');
+      b.onclick = () => { state.sessTab = key; render(); };
+      tabs.append(b);
+    }
+    await views[{ fleet: 'fleet', bus: 'bus', activity: 'events' }[state.sessTab]]();
+    app.prepend(tabs);
+  },
+
+  async facts() {
+    const brains = await get('/api/brains');
+    if (!brains.length) return empty('no memories yet');
+    if (!state.brain || !brains.some(b => b.dataset === state.brain)) {
+      state.brain = brains[0].dataset;
+    }
+
+    const grid = el('div', 'grid');
+    const left = el('div');
+    const right = el('div');
+    grid.append(left, right);
+
+    let tier = null;
+    for (const b of brains) {
+      if (b.tier !== tier) { tier = b.tier; left.append(el('div', 'tier', tier)); }
+      const s = el('div', 'side');
+      if (b.dataset === state.brain) s.setAttribute('aria-current', 'true');
+      s.append(el('span', null, b.dataset.replace(/^(proj|org)_/, '')),
+               el('span', 'k', b.facts + (Number(b.long) ? ' · ' + b.long + ' long' : '')));
+      s.onclick = () => { state.brain = b.dataset; state.q = ''; render(); };
+      left.append(s);
+    }
+
+    const box = el('input');
+    box.id = 'q';
+    box.placeholder = 'filter inside this brain (substring)';
+    box.autocomplete = 'off';
+    box.value = state.q;
+    const list = el('div');
+    right.append(box, list);
+
+    async function load() {
+      const rows = await get('/api/facts?dataset=' + encodeURIComponent(state.brain) +
+                             '&q=' + encodeURIComponent(state.q));
+      if (!rows.length) { list.replaceChildren(el('div', 'empty', 'nothing here')); return; }
+      list.replaceChildren(...rows.map(f => {
+        const actions = el('div', 'acts');
+        const b = el('button', 'act danger', 'forget');
+        b.onclick = async () => {
+          if (!confirm('Forget this fact permanently?')) return;
+          b.disabled = true;
+          try { await post('/api/forget', { id: f.id }); r.remove(); toast('forgotten'); }
+          catch (err) { toast(String(err.message || err)); b.disabled = false; }
+        };
+        actions.append(b, el('span', 'k', f.len + ' chars'));
+        const r = row(ago(f.ts), f.text, { clip: true, actions });
+        return r;
+      }));
+    }
+    let t;
+    box.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => { state.q = box.value.trim(); load(); }, 200);
+    });
+    app.replaceChildren(grid);
+    await load();
+  },
+
+  /** The review queue — previously invisible unless you remembered a CLI command. */
+  async dreams() {
+    const rows = await get('/api/proposals');
+    if (!rows.length) {
+      return empty('nothing pending. the nightly dream runs 03:00–06:00 and proposes here.');
+    }
+    const out = [el('h2', null, 'proposed — nothing is stored until you approve')];
+    for (const p of rows) {
+      // A split carries its parts in one row so approving is atomic; number them so it
+      // is obvious this is several facts, not one long one.
+      const text = p.kind === 'split'
+        ? p.text.split('\n---8<---\n').map((x, i) => (i + 1) + '. ' + x).join('\n\n')
+        : p.text;
+      const replaces = (p.replaces || '').split(',').filter(Boolean);
+      const actions = el('div', 'acts');
+      const decide = async (action, btn) => {
+        actions.querySelectorAll('button').forEach(b => b.disabled = true);
+        try { await post('/api/proposal', { id: p.id, action }); r.remove(); toast(action + 'd #' + p.id); badges(); }
+        catch (err) { toast(String(err.message || err)); actions.querySelectorAll('button').forEach(b => b.disabled = false); }
+      };
+      const ok = el('button', 'act primary', 'approve');
+      ok.onclick = () => decide('approve');
+      const no = el('button', 'act danger', 'reject');
+      no.onclick = () => decide('reject');
+      actions.append(ok, no);
+      const sub = [p.rationale, replaces.length ? 'replaces ' + replaces.length + ' existing fact(s)' : '']
+        .filter(Boolean).join(' · ');
+      const r = row('#' + p.id + ' ' + p.dataset, text,
+                    { clip: true, tag: p.kind, sub: sub || undefined, actions });
+      out.push(r);
+    }
+    app.replaceChildren(...out);
+  },
+
+  /** Standup, split by side.
+
+      Everything in one list buried the thing actually wanted: today's brief. The current
+      draft for the selected side gets a card of its own; delivered briefs sit below,
+      dimmed — present and findable, visibly not the thing to read now. */
+  async standup() {
+    const rows = await get('/api/standup');
+    state.side = state.side || 'work';
+    const mine = rows.filter(r => r.side === state.side);
+    const current = mine.find(r => r.status === 'draft');
+    const past = mine.filter(r => r !== current);
+    const out = [];
+
+    const tabs = el('div', 'tabs');
+    for (const side of ['work', 'personal']) {
+      const b = el('button', null, side);
+      if (side === state.side) b.setAttribute('aria-current', 'true');
+      b.onclick = () => { state.side = side; render(); };
+      tabs.append(b);
+    }
+    out.push(tabs);
+
+    const card = el('div', 'card-lg');
+    if (current) {
+      card.append(el('h3', null, 'current brief'));
+      card.append(el('div', 'k', ago(current.ts)));
+      card.append(markdown(current.body));
+      const acts = el('div', 'acts');
+      const mark = el('button', 'act primary', 'mark reported');
+      mark.onclick = async () => {
+        mark.disabled = true;
+        try { await post('/api/standup', { action: 'reported', side: state.side }); render(); }
+        catch (e) { toast(String(e.message || e)); mark.disabled = false; }
+      };
+      const regen = el('button', 'act', 'regenerate');
+      regen.onclick = () => generate(regen);
+      acts.append(mark, regen);
+      card.append(acts);
+    } else {
+      card.append(el('h3', null, 'no brief for ' + state.side + ' yet'));
+      card.append(el('div', 'fix', 'generation runs claude -p on your subscription and takes a while.'));
+      const acts = el('div', 'acts');
+      const gen = el('button', 'act primary', 'generate ' + state.side + ' brief');
+      gen.onclick = () => generate(gen);
+      acts.append(gen);
+      card.append(acts);
+    }
+    out.push(card);
+
+    async function generate(btn) {
+      btn.disabled = true;
+      toast('generating…');
+      try { await post('/api/standup', { action: 'brief', side: state.side }); render(); }
+      catch (e) { toast(String(e.message || e)); btn.disabled = false; }
+    }
+
+    if (past.length) {
+      out.push(el('h2', null, 'delivered'));
+      for (const b of past) {
+        const r = row(ago(b.ts), undefined, { tag: b.status });
+        const body = markdown(b.body);
+        body.className = 'clip';
+        body.onclick = () => body.classList.toggle('open');
+        r.lastElementChild.append(body);
+        r.classList.add('past');
+        out.push(r);
+      }
+    }
+    app.replaceChildren(...out);
+  },
+
+  /** Claude accounts: which slot is live, how much of each window is gone, and the
+      switch. Same data the menu-bar widget shows, but actionable. */
+  async accounts() {
+    const payload = await get('/api/accounts');
+    const rows = payload.accounts;
+    const deltas = payload.deltas24h || {};
+    if (rows === null) {
+      return empty('could not read Claude usage — is the claude-usage-poll agent running?');
+    }
+    if (!rows.length) return empty('no Claude accounts configured');
+
+    /** One window as a labelled bar. The BAND comes from the accounts facet, not from a
+        threshold re-invented here — the CLI, Telegram and this page must agree on what
+        a colour means. */
+    const meter = (label, pct, bandName, resetsAt) => {
+      const m = el('div', 'meter');
+      const bar = el('div', 'bar bar-' + (bandName || 'ok'));
+      const fill = el('i');
+      fill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+      bar.append(fill);
+      const val = el('div', 'val', Math.round(pct) + '%');
+      m.append(el('div', 'lbl', label), bar, val);
+      if (resetsAt) {
+        const t = Date.parse(resetsAt);
+        if (!isNaN(t)) {
+          const secs = (t - Date.now()) / 1000;
+          const txt = secs <= 0 ? 'resetting' :
+                      secs < 3600 ? 'resets in ' + Math.round(secs / 60) + 'm' :
+                      secs < 86400 ? 'resets in ' + Math.round(secs / 3600) + 'h' :
+                      'resets in ' + Math.round(secs / 86400) + 'd';
+          val.title = txt;
+          m.append(el('div', 'lbl', ''), el('div', 'fix', txt), el('div'));
+        }
+      }
+      return m;
+    };
+
+    // ACTIVE FIRST, always. The daemon sorts worst-weekly-first, which is right for an
+    // alert but wrong for a page you open to see what you are using right now: the live
+    // account was landing in the middle, marked only by a small caret.
+    const sorted = [...rows].sort((x, y) => (y.active === true) - (x.active === true));
+    const out = [];
+    for (const a of sorted) {
+      const r = el('div', 'row');
+      if (a.active) r.classList.add('live');
+      const head = el('div', 'k', a.slot);
+      if (a.active) head.prepend(el('span', 'livetag', 'ACTIVE'), document.createTextNode(' '));
+      head.classList.add(a.sevenDayBand === 'critical' ? 'fail'
+                       : a.sevenDayBand === 'warning' ? 'warn' : 'ok');
+      const body = el('div');
+      if (a.email) body.append(el('div', 'fix', a.email));
+      // 5h FIRST: it is the window that decides whether you can work in the next hour.
+      // The weekly one matters more in aggregate but changes slowly.
+      body.append(meter('5h', a.fiveHour, a.fiveHourBand, a.fiveHourResetsAt));
+      body.append(meter('week', a.sevenDay, a.sevenDayBand, a.resetsAt));
+      const d = deltas[a.slot];
+      if (d !== undefined && d !== null && d > 0) {
+        // How fast, never by whom: no session reports its token spend, so naming one
+        // would be a guess presented as a fact.
+        body.append(el('div', 'fix',
+          '+' + Math.round(d) + '% of the weekly window in the last 24h'));
+      }
+      if (!a.active) {
+        const acts = el('div', 'acts');
+        const b = el('button', 'act', 'switch to this');
+        b.onclick = async () => {
+          // Switching ONTO an exhausted slot is almost never what you meant — the button
+          // is offered because the slot is inactive, not because it is usable.
+          if (a.sevenDayBand === 'critical' &&
+              !confirm(a.slot + ' has used ' + Math.round(a.sevenDay) +
+                       '% of its weekly limit. Switch to it anyway?')) return;
+          b.disabled = true;
+          try { await post('/api/accounts', { slot: a.slot }); toast('switched'); render(); }
+          catch (e) { toast(String(e.message || e)); b.disabled = false; }
+        };
+        acts.append(b);
+        body.append(acts);
+      }
+      r.append(head, body);
+      out.push(r);
+    }
+    const worst = rows[0];
+    if (worst.sevenDayBand === 'critical') {
+      out.unshift(row('⚠', worst.slot + ' is at ' + Math.round(worst.sevenDay) +
+                           '% of its weekly limit'));
+    }
+    app.replaceChildren(...out);
+  },
+
+  /** Settings. The schema is served from config_facet, so this page can only ever offer
+      knobs the daemon actually reads. */
+  async settings() {
+    const { schema, values, secret_status } = await get('/api/config');
+    const cur = Object.fromEntries(values.map(v => [v.key, v.value]));
+    const out = [el('h2', null, 'settings')];
+
+    for (const sp of schema) {
+      const now = cur[sp.key] !== undefined && cur[sp.key] !== '' ? cur[sp.key] : sp.default;
+      const wrap = el('div', 'set');
+      const left = el('div');
+      left.append(el('div', 'lab', sp.label || sp.key));
+      if (sp.help) left.append(el('div', 'fix', sp.help));
+      let input;
+      if (sp.type === 'secret') {
+        // No input. A field the page cannot fill and must not echo is not a field —
+        // the value never leaves the daemon, so all there is to show is the state.
+        const state = (secret_status || {})[sp.key] || 'missing';
+        const dot = state === 'configured' ? '🟢' : state === 'unreadable' ? '🔴' : '⚪';
+        input = el('div', 'fix', dot + ' ' + state + ' — set it with `paos init`');
+        wrap.append(left, input);
+        out.push(wrap);
+        continue;
+      }
+      if (sp.type === 'bool') {
+        input = el('input');
+        input.type = 'checkbox';
+        input.checked = !['0', 'false', 'no', 'off', ''].includes(String(now).toLowerCase());
+      } else if (sp.type === 'enum') {
+        input = el('select');
+        for (const o of sp.options || []) {
+          const opt = el('option', null, o);
+          opt.value = o;
+          if (o === String(now)) opt.selected = true;
+          input.append(opt);
+        }
+      } else {
+        input = el('input');
+        input.type = sp.type === 'int' ? 'number' : 'text';
+        input.value = now;
+      }
+      const save = async () => {
+        const v = sp.type === 'bool' ? (input.checked ? '1' : '0') : input.value;
+        try { await post('/api/config', { key: sp.key, value: v }); toast(sp.key + ' = ' + v); }
+        catch (e) { toast(String(e.message || e)); }
+      };
+      // Commit on change/blur, not per keystroke — every save is a subprocess.
+      input.onchange = save;
+      wrap.append(left, input);
+      out.push(wrap);
+    }
+    out.push(el('div', 'fix',
+      'Only settings the daemon actually reads are shown. Changes apply on its next ' +
+      'check (within 10 minutes); no restart needed.'));
+    app.replaceChildren(...out);
+  },
+
+  async fleet() {
+    const rows = await get('/api/fleet');
+    if (!rows.length) return empty('no live sessions');
+    app.replaceChildren(...rows.map(s =>
+      row(s.name, s.status || '(idle)', { sub: 'last seen ' + ago(s.last_seen) })));
+  },
+
+  async bus() {
+    const rooms = await get('/api/rooms');
+    if (!rooms.length) return empty('no open rooms');
+    if (!state.room || !rooms.some(r => r.room === state.room)) state.room = rooms[0].room;
+
+    const grid = el('div', 'grid');
+    const left = el('div');
+    const right = el('div');
+    grid.append(left, right);
+    for (const r of rooms) {
+      const s = el('div', 'side');
+      if (r.room === state.room) s.setAttribute('aria-current', 'true');
+      s.append(el('span', null, r.room), el('span', 'k', String(r.messages)));
+      s.onclick = () => { state.room = r.room; render(); };
+      left.append(s);
+    }
+    const msgs = await get('/api/messages?room=' + encodeURIComponent(state.room));
+    if (!msgs.length) right.append(el('div', 'empty', 'no messages'));
+    else right.append(...msgs.map(m =>
+      row(ago(m.ts), m.text, { tag: m.sender + ' → ' + m.target, clip: true })));
+    app.replaceChildren(grid);
+  },
+
+  async events() {
+    const rows = await get('/api/events');
+    if (!rows.length) return empty('nothing recorded yet');
+    app.replaceChildren(...rows.map(e => row(ago(e.ts), e.summary, { tag: e.kind })));
+  },
+
+  /** The kanban board. Lives in tasks.js — its own asset, so this file does not grow a
+      drag-and-drop implementation on top of everything else it already does. */
+  async tasks() {
+    if (!window.TasksView) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = '/tasks.js';
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('could not load /tasks.js'));
+        document.head.append(s);
+      });
+    }
+    await TasksView.show();
+  },
+};
+
+async function badges() {
+  try {
+    const [props, inbox] = await Promise.all([get('/api/proposals'), get('/api/inbox')]);
+    const set = (id, n) => {
+      const b = document.getElementById(id);
+      b.textContent = String(n);
+      b.hidden = !n;
+    };
+    set('bDreams', props.length);
+    set('bInbox', inbox.escalations.length + inbox.parked.length);
+    // Counts what needs the OPERATOR — review items awaiting approval, plus work the
+    // fleet dropped. Not `proposed`: those they wrote themselves, and a badge for your
+    // own backlog is noise.
+    try {
+      const t = await get('/api/tasks');
+      const b = document.getElementById('tasks-badge');
+      b.textContent = t.needs_operator || '';
+      b.style.display = t.needs_operator ? '' : 'none';
+    } catch { /* the board's badge must not blank the others */ }
+  } catch { /* a failed badge must never blank the page */ }
+}
+
+function go(v) {
+  // The board owns a poll timer and a detail panel; leaving the view has to stop both,
+  // or a hidden tab keeps fetching and Escape still closes a panel nobody can see.
+  if (view === 'tasks' && v !== 'tasks' && window.TasksView) TasksView.hide();
+  view = v;
+  document.querySelectorAll('nav button').forEach(b =>
+    b.setAttribute('aria-current', String(b.dataset.view === v)));
+  app.replaceChildren();
+  render();
+}
+document.querySelectorAll('nav button').forEach(b => { b.onclick = () => go(b.dataset.view); });
+
+async function render() {
+  try {
+    await views[view]();
+    statusEl.textContent = '';
+  } catch (e) {
+    // Surface the failure instead of leaving a blank panel — the first dashboard threw
+    // stderr away and rendered "Couldn't set topic" with no cause.
+    statusEl.textContent = 'error';
+    empty(String(e.message || e));
+  }
+}
+
+render();
+badges();
+// Poll only while visible, and never over a view you are typing into or reading a long
+// entry in — a refresh would collapse the row you just expanded. The original server ran
+// a 1 Hz snapshot loop unconditionally: 32,400 queries/hour with nobody watching.
+setInterval(() => {
+  if (document.visibilityState !== 'visible') return;
+  badges();
+  // 'tasks' runs its own 5s poll with drag/dirty guards, so the generic one would both
+  // duplicate it and clobber a half-typed comment.
+  if (!['memory', 'dreams', 'standup', 'settings', 'tasks'].includes(view)) render();
+}, 8000);
+</script>

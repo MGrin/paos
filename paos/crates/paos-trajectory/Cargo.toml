@@ -1,0 +1,12 @@
+[package]
+name = "paos-trajectory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# No regex, no http, no sqlite. This crate is pure ETL over local JSONL: it reads
+# transcripts and returns records. Keeping it dependency-free is what lets `lessons`
+# and `dream` run over every transcript on the machine cheaply.
+serde.workspace = true
+serde_json.workspace = true

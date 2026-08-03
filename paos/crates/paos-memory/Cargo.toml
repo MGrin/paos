@@ -1,0 +1,13 @@
+[package]
+name = "paos-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# default = ["onig", "hf-hub"] — onig is a C library needing a C toolchain, and
+# hf-hub downloads weights at runtime. Both break "single binary, offline, no
+# toolchain", so we take the pure-Rust regex backend and the local-only loader.
+model2vec-rs = { version = "0.2.1", default-features = false, features = ["fancy-regex", "local-only"] }
+paos-store = { path = "../paos-store" }
+rusqlite.workspace = true

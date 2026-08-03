@@ -1,0 +1,24 @@
+[package]
+name = "paosd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "paosd"
+path = "src/main.rs"
+
+[dependencies]
+paos-proto = { path = "../paos-proto" }
+paos-store = { path = "../paos-store" }
+paos-secrets = { path = "../paos-secrets" }
+paos-bus = { path = "../paos-bus" }
+paos-presence = { path = "../paos-presence" }
+paos-tasks = { path = "../paos-tasks" }
+paos-memory = { path = "../paos-memory" }
+paos-librarian = { path = "../paos-librarian" }
+paos-web = { path = "../paos-web" }
+paos-operator = { path = "../paos-operator" }
+# Same version as the store: sharing one rusqlite avoids two linked SQLite copies.
+rusqlite.workspace = true
+serde_json.workspace = true

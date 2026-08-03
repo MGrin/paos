@@ -1,0 +1,8 @@
+[package]
+name = "paos-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rusqlite.workspace = true

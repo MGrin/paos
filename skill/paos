@@ -1,0 +1,26 @@
+#!/bin/sh
+# paos — the stable entry point every session, doc and hook already calls.
+#
+# It stays at this path precisely BECAUSE the implementation moved: `paos bus …`,
+# `paos memory …` and the rest are typed from memory, written into SKILL.md, the global
+# CLAUDE.md and a year of session transcripts. Keeping the name while the code moved to
+# Rust is what let the whole migration happen without a fleet-wide relearn.
+#
+# It used to be a 97-line Python dispatcher that routed each facet — first to Python
+# modules, then, one at a time, to paosctl. All twelve now run in Rust, so what is left is
+# `exec`. No Python remains in this skill.
+#
+# `exec`, not a call: one fewer process on a path that runs many times per turn, and the
+# exit code is paosctl's own rather than something this script decided to pass through.
+paosctl="${PAOSCTL:-$HOME/.local/bin/paosctl}"
+if [ ! -x "$paosctl" ]; then
+  # Say what is wrong AND how to fix it. This is the one moment a session discovers the
+  # binary is missing, and "command not found" would send it looking in the wrong place.
+  echo "paos: paosctl is not installed at $paosctl" >&2
+  echo "  build and install it:" >&2
+  echo "    cd <dotfiles>/paos && cargo build --release \\" >&2
+  echo "      && install -m 755 target/release/paos ~/.local/bin/paosctl" >&2
+  echo "  (setup phase 80 does this on a fresh machine)" >&2
+  exit 127
+fi
+exec "$paosctl" "$@"

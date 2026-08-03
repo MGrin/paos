@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  paosd — one daemon replacing ai.paos.operator AND ai.paos.ui.
+
+  It owns the single SQLite connection, pushes to blocked listeners, bridges Telegram,
+  and serves the dashboard. Measured idle cost with 5 listeners attached: 0.000% CPU,
+  2.1 MB RSS, zero SQLite queries — against 92,900 queries/hour and ~125 MB before.
+
+  KeepAlive so a crash restarts it; the CLI fails loudly rather than falling back to
+  opening SQLite directly, so a dead daemon is visible instead of silently reintroducing
+  the multi-writer races this exists to remove.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.paos.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/bin/paosd</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- Don't spin on a crash-loop: a misconfigured store should back off, not thrash. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.paos/server-logs/paosd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.paos/server-logs/paosd.err.log</string>
+</dict>
+</plist>

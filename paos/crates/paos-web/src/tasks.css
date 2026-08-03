@@ -1,0 +1,115 @@
+/* The board.
+ *
+ * Reuses index.html's custom properties (--bg --panel --panel2 --line --fg --dim
+ * --accent --good --warn --bad) rather than introducing a second palette. A board that
+ * looked like a different product bolted onto the dashboard would read as exactly that.
+ */
+
+.board-bar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px;
+}
+.board-bar select, .board-bar input {
+  padding: 5px 9px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--fg); font: inherit; font-size: 12px;
+  margin: 0; width: auto;
+}
+.board-bar .spacer { flex: 1; }
+.chip {
+  font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--line); background: none; color: var(--dim); cursor: pointer;
+}
+.chip[aria-pressed="true"] { background: var(--panel); color: var(--fg); border-color: var(--accent); }
+
+/* Five columns, each scrolling on its own so a long Done column cannot push Ready off
+   the screen. Horizontal scroll below ~1000px rather than reflow: a kanban board that
+   stacks into one column has stopped being a kanban board. */
+.board { display: grid; grid-template-columns: repeat(5, minmax(210px, 1fr)); gap: 12px; }
+@media (max-width: 1000px) {
+  .board { display: flex; overflow-x: auto; padding-bottom: 8px; }
+  .board .col { min-width: 240px; flex: none; }
+}
+
+.col { display: flex; flex-direction: column; min-height: 120px; }
+.col > h3 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+  font-weight: 600; margin: 0 0 8px; display: flex; justify-content: space-between;
+  align-items: baseline; gap: 6px;
+}
+.col > h3 .n { font-variant-numeric: tabular-nums; }
+.col .drop {
+  flex: 1; border-radius: 10px; padding: 4px; border: 1px dashed transparent;
+  display: flex; flex-direction: column; gap: 8px; min-height: 60px;
+}
+.col .drop.over { border-color: var(--accent); background: rgba(110,168,254,.06); }
+
+.card {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 9px 11px; cursor: grab; display: flex; flex-direction: column; gap: 6px;
+}
+.card:hover { border-color: var(--dim); }
+.card.dragging { opacity: .45; cursor: grabbing; }
+.card .t { line-height: 1.35; overflow-wrap: anywhere; }
+.card .meta {
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  font-size: 11px; color: var(--dim);
+}
+.card select {
+  font: inherit; font-size: 11px; padding: 2px 6px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel2); color: var(--dim);
+  width: auto; margin: 0;
+}
+
+/* An unowned in-progress task is the single most valuable card on the board: real work,
+   nobody holding it. It gets the loudest treatment here, a left bar rather than a badge,
+   because a badge among five other badges is not loud. */
+.card.rescue { border-left: 3px solid var(--warn); }
+
+.pill {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--dim); white-space: nowrap;
+}
+.pill.p0 { color: var(--bad); border-color: var(--bad); }
+.pill.p1 { color: var(--warn); border-color: var(--warn); }
+.pill.blocked { color: var(--dim); }
+.pill.owner { color: var(--accent); border-color: var(--accent); }
+.pill.rescue { color: var(--warn); border-color: var(--warn); }
+
+/* Swimlanes: epics get a header row spanning the board, children indent under it. */
+.lane > h2 { margin: 18px 0 8px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+.lane > h2 .caret { color: var(--dim); font-size: 10px; }
+.lane[data-open="false"] .board { display: none; }
+
+/* Detail panel. Fixed rather than a modal so the board stays readable beside it — the
+   common action is reading a card's log while looking at where it sits. */
+.panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 100%);
+  background: var(--panel); border-left: 1px solid var(--line);
+  padding: 18px 20px; overflow-y: auto; z-index: 50;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.panel h3 { margin: 0; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+.panel .close { position: absolute; top: 12px; right: 14px; }
+.panel .log { display: flex; flex-direction: column; gap: 7px; }
+.panel .log .entry {
+  border-left: 2px solid var(--line); padding: 0 0 0 9px; font-size: 12px;
+}
+.panel .log .entry .who { color: var(--dim); font-variant-numeric: tabular-nums; }
+.panel .log .entry .txt { overflow-wrap: anywhere; white-space: pre-wrap; }
+.panel .log .entry.orphan { border-left-color: var(--warn); }
+.panel .log .entry.comment { border-left-color: var(--accent); }
+.panel textarea {
+  width: 100%; min-height: 74px; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+  font: inherit; resize: vertical;
+}
+.panel textarea:focus { outline: none; border-color: var(--accent); }
+.panel label { font-size: 12px; color: var(--dim); display: flex; gap: 6px; align-items: center; }
+.panel .why {
+  border: 1px solid var(--warn); border-radius: 9px; padding: 8px 11px;
+  font-size: 12px; color: var(--warn);
+}
+.backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 40; }
+
+.newform { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.newform .line { display: flex; gap: 8px; }
+.newform input { margin: 0; }

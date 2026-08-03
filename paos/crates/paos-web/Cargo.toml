@@ -1,0 +1,17 @@
+[package]
+name = "paos-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+paos-store = { path = "../paos-store" }
+paos-memory = { path = "../paos-memory" }
+paos-tasks = { path = "../paos-tasks" }
+paos-operator = { path = "../paos-operator" }
+rusqlite.workspace = true
+# Already in the workspace and already linked into paosd, which links this crate — so
+# this costs nothing at build time. The alternative was scanning the schema JSON with
+# string matching, which is how you end up treating a key named "secret_note" as a
+# secret.
+serde_json.workspace = true

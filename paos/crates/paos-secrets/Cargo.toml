@@ -1,0 +1,10 @@
+[package]
+name = "paos-secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Deliberately none. Keychain access shells `security(1)`, which macOS ships; a crate
+# binding the Security framework would cost every platform a build dependency to serve
+# one, and this workspace's whole shape is a single binary with no system libraries.
+[dependencies]

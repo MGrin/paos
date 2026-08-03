@@ -64,8 +64,9 @@ useful ones right now.
 
 ## Build and test
 
-`cargo build --release` · `cargo test` — 967 tests, all offline: no network, no daemon,
-no Telegram. If they do not pass on a clean checkout, that is a bug worth an issue.
+`cargo build --release` · `cargo test` — the whole suite is offline: no network, no
+daemon, no Telegram. If it does not pass on a clean checkout, that is a bug worth an
+issue.
 
 Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) · Security: [SECURITY.md](SECURITY.md)
 

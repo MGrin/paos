@@ -3,7 +3,7 @@
 ## Before anything else
 
 ```sh
-cargo test          # ~967 tests, all offline, no network and no daemon needed
+cargo test          # the whole suite, offline: no network, no daemon
 ```
 
 If that does not pass on a clean checkout, that is a bug in this repository and worth an

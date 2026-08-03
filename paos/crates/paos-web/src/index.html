@@ -691,7 +691,7 @@ const views = {
   /** Settings. The schema is served from config_facet, so this page can only ever offer
       knobs the daemon actually reads. */
   async settings() {
-    const { schema, values, secret_status } = await get('/api/config');
+    const { schema, values, secret_status, sources } = await get('/api/config');
     const cur = Object.fromEntries(values.map(v => [v.key, v.value]));
     const out = [el('h2', null, 'settings')];
 
@@ -702,6 +702,12 @@ const views = {
       left.append(el('div', 'lab', sp.label || sp.key));
       if (sp.help) left.append(el('div', 'fix', sp.help));
       let input;
+      const src = (sources || {})[sp.key];
+      if (src === 'env') {
+        // Supplied by the .env the daemon reads. Showing an editable box here would
+        // offer a knob that changes nothing, since the file wins on the next restart.
+        left.append(el('div', 'fix', 'set in ~/.paos/.env — edit the file, not this page'));
+      }
       if (sp.type === 'secret') {
         // No input. A field the page cannot fill and must not echo is not a field —
         // the value never leaves the daemon, so all there is to show is the state.

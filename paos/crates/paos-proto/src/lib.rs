@@ -163,6 +163,14 @@ pub enum Request {
     /// because the table is small and the writes are rare.
     ConfigGet,
     ConfigSet { key: String, value: String },
+    /// Where does each setting actually come from — `config`, `env`, or `unset`?
+    ///
+    /// The settings page reads the CONFIG TABLE, but the daemon falls back to the `.env`
+    /// beside the store. On 2026-08-03 that gap made the page report a missing Telegram
+    /// token and an unconfigured chat id while the bridge was demonstrably working, which
+    /// is the exact failure the page's own code comments warn about: a UI that looks like
+    /// it worked. Values never cross this boundary, only their origin.
+    ConfigSources,
     /// Is this secret configured? The daemon answers with a STATE, never the value —
     /// which is what lets the dashboard render a secret row without the web layer having
     /// any code path that can read a token.

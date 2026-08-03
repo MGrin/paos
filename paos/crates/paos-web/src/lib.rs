@@ -390,7 +390,10 @@ impl Web {
         // there is no code path here that can read a token — a property of the
         // dependency graph rather than a rule someone has to remember.
         let status_of = |key: &str| run_skill(&["secret", "status", key]).unwrap_or_default();
-        Response::json(config_payload(&schema, values, &secrets, &status_of))
+        // WHERE each setting comes from, so the page cannot claim a token is missing
+        // while the bridge is running on one from the .env.
+        let sources = run_skill(&["sources"]).unwrap_or_default();
+        Response::json(config_payload(&schema, values, &secrets, &status_of, &sources))
     }
 
     fn set_config(&self, req: &Request) -> Response {
@@ -682,20 +685,40 @@ fn config_payload(
     values: String,
     secrets: &[String],
     status_of: &dyn Fn(&str) -> String,
+    sources: &str,
 ) -> String {
+    let src = parse_sources(sources);
     let mut out = Vec::new();
     for key in secrets {
-        let state = match status_of(key).trim() {
-            "configured" => "configured",
-            "unreadable" => "unreadable",
-            // Anything else — including an unreachable daemon — reads as not-configured
-            // rather than as a fault of the secret itself.
-            _ => "missing",
+        // A secret supplied by the .env IS configured. Reporting it missing because the
+        // config table has no reference is how the page ended up contradicting a working
+        // bridge.
+        let state = if src.iter().any(|(k, v)| k == key && v == "env") {
+            "configured"
+        } else {
+            match status_of(key).trim() {
+                "configured" => "configured",
+                "unreadable" => "unreadable",
+                // Anything else — including an unreachable daemon — reads as
+                // not-configured rather than as a fault of the secret itself.
+                _ => "missing",
+            }
         };
         out.push(format!("\"{}\":\"{}\"", esc(key), state));
     }
-    format!("{{\"schema\":{},\"values\":{},\"secret_status\":{{{}}}}}",
-            schema.trim(), values, out.join(","))
+    let srcs: Vec<String> = src.iter()
+        .map(|(k, v)| format!("\"{}\":\"{}\"", esc(k), esc(v)))
+        .collect();
+    format!("{{\"schema\":{},\"values\":{},\"secret_status\":{{{}}},\"sources\":{{{}}}}}",
+            schema.trim(), values, out.join(","), srcs.join(","))
+}
+
+/// `key=source` lines from `paos sources`.
+fn parse_sources(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| l.trim().split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
 }
 
 /// The keys the settings page must render as a state rather than an input.
@@ -846,9 +869,29 @@ mod tests {
         // The reference is filtered out before serialisation, so `values` never held it.
         let values = json_pairs(
             vec![("dream_enabled".to_string(), "1".to_string())].into_iter());
-        let out = config_payload(schema, values, &secrets, &|_| "missing".into());
+        let out = config_payload(schema, values, &secrets, &|_| "missing".into(), "");
         assert!(out.contains("\"telegram_bot_token\":\"missing\""), "{out}");
         assert!(!out.contains("env:"), "no reference may reach the browser: {out}");
+    }
+
+    #[test]
+    fn a_secret_supplied_by_the_env_reads_as_configured_not_missing() {
+        // The page reported a MISSING Telegram token while the bridge was demonstrably
+        // running on one from the .env. Config-table-only status is how a settings page
+        // ends up contradicting the daemon it configures.
+        let schema = r#"[{"key":"telegram_bot_token","type":"secret","default":""}]"#;
+        let out = config_payload(schema, "[]".into(), &secret_keys(schema),
+                                 &|_| "missing".into(), "telegram_bot_token=env\n");
+        assert!(out.contains("\"telegram_bot_token\":\"configured\""), "{out}");
+        assert!(out.contains("\"sources\":{\"telegram_bot_token\":\"env\"}"), "{out}");
+    }
+
+    #[test]
+    fn an_unset_secret_is_still_missing_when_nothing_supplies_it() {
+        let schema = r#"[{"key":"telegram_bot_token","type":"secret","default":""}]"#;
+        let out = config_payload(schema, "[]".into(), &secret_keys(schema),
+                                 &|_| "missing".into(), "telegram_bot_token=unset\n");
+        assert!(out.contains("\"telegram_bot_token\":\"missing\""), "{out}");
     }
 
     #[test]
@@ -856,7 +899,7 @@ mod tests {
         // run_skill returns an empty string when it cannot reach the daemon. Reporting
         // that as `unreadable` would blame the keychain for a socket problem.
         let schema = r#"[{"key":"telegram_bot_token","type":"secret","default":""}]"#;
-        let out = config_payload(schema, "[]".into(), &secret_keys(schema), &|_| "".into());
+        let out = config_payload(schema, "[]".into(), &secret_keys(schema), &|_| "".into(), "");
         assert!(out.contains("\"telegram_bot_token\":\"missing\""), "{out}");
     }
 

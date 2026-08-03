@@ -158,9 +158,9 @@ fn main() {
     // form its own usage text advertises — died here with "unknown option: --limit" while
     // the Python answered fine. The test below locks it against the facet list rather than
     // against a hand-maintained count, because the failure mode is omission.
-    const OWN_PARSER: [&str; 14] =
+    const OWN_PARSER: [&str; 15] =
         ["bus", "memory", "operator", "standup", "accounts", "backup", "config", "event",
-         "hook", "gc", "selftest", "trajectory", "task", "secret"];
+         "hook", "gc", "selftest", "trajectory", "task", "secret", "sources"];
     if !OWN_PARSER.contains(&cmd) {
         if let Some(f) = unknown_flags.first() {
             fail(&format!("unknown option: {f}\n\n{USAGE}"), 2);
@@ -297,6 +297,7 @@ fn main() {
         // There is deliberately no `secret set`. Writing a secret is `paos init`'s job:
         // a verb that takes a token as an argument puts it in the shell history of every
         // session that runs it.
+        "sources" => Request::ConfigSources,
         "secret" => match positional.get(1).map(String::as_str) {
             Some("status") => Request::SecretStatus {
                 key: positional.get(2).cloned()

@@ -434,6 +434,43 @@ pub fn dispatch(daemon: &Daemon, req: Request) -> Response {
                 Err(e) => Response::err(format!("config write failed: {e}"), 1),
             }
         }
+        Request::ConfigSources => {
+            let g = lock(daemon);
+            let from_db = |k: &str| -> bool {
+                g.query_row("SELECT value FROM paos_config WHERE key=?1", [k],
+                            |r| r.get::<_, String>(0))
+                    .ok()
+                    .is_some_and(|v: String| !v.trim().is_empty())
+            };
+            // The same two files main() reads, in the same order.
+            let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+            let env_path = [home.join(".paos/.env"), home.join(".claude/skills/paos/.env")]
+                .into_iter()
+                .find(|p| p.exists())
+                .unwrap_or_else(|| home.join(".paos/.env"));
+            let tg = paos_operator::telegram::Config::from_db_or_env(&g, &env_path);
+            let from_env = |k: &str| -> bool {
+                match (&tg, k) {
+                    (Some(c), "telegram_bot_token") => !c.token.is_empty(),
+                    (Some(c), "telegram_chat_id") => !c.chat_id.is_empty(),
+                    (Some(c), "telegram_allowed_user_id") => c.allowed_user_id.is_some(),
+                    (Some(c), "telegram_operator_username") => c.operator_username.is_some(),
+                    _ => false,
+                }
+            };
+            let lines = ["telegram_bot_token", "telegram_chat_id",
+                         "telegram_allowed_user_id", "telegram_operator_username"]
+                .iter()
+                .map(|k| {
+                    let src = if from_db(k) { "config" }
+                              else if from_env(k) { "env" }
+                              else { "unset" };
+                    format!("{k}={src}")
+                })
+                .collect();
+            Response::Ok { lines }
+        }
+
         Request::SecretStatus { key } => {
             let g = lock(daemon);
             let raw: String = g

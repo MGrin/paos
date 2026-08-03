@@ -101,8 +101,17 @@ fn run() -> io::Result<()> {
     // Telegram bridge. Unconfigured is fine and common: the bus and memory work with
     // no Telegram at all, so an absent token must not stop the daemon.
     {
-        let env_path = std::path::Path::new(&std::env::var("HOME").unwrap_or_default())
-            .join(".claude/skills/paos/.env");
+        // `~/.paos/.env` FIRST — beside the store, where `paos init` writes it and where
+        // nothing else syncs. The old location is inside the SKILL directory, which is a
+        // deploy target: on 2026-08-03 a skill deploy with `rsync --delete` removed the
+        // operator's Telegram credentials, because a secret was living somewhere that
+        // gets replaced. The skill path stays as a fallback so an existing machine keeps
+        // working, and `paos init` writes to the new one.
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let env_path = [home.join(".paos/.env"), home.join(".claude/skills/paos/.env")]
+            .into_iter()
+            .find(|p| p.exists())
+            .unwrap_or_else(|| home.join(".paos/.env"));
         // The database first, .env second. The lock is taken and released before
         // spawning: the bridge takes it itself on every update, and holding it across
         // the spawn would hand the new thread a mutex its own first act is to acquire.

@@ -107,6 +107,33 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE memories ADD COLUMN last_used TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE memories ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0", []);
+    // Alternate phrasings, added 2026-08-03. Measured on a 30-question golden set: four
+    // of the six failures were not ranked badly, the right fact was absent from the top
+    // THIRTY. "what does he do for a living" never reaches a fact reading "Product
+    // Engineer / Software Architect". A static embedding has no reasoning to bridge that,
+    // so no blend weight can — the fix has to put the question's own words somewhere the
+    // embedding can see them.
+    let _ = conn.execute("ALTER TABLE memories ADD COLUMN aliases TEXT", []);
+    // ONE vector for the phrasings, scored against the fact's own with max(). Three
+    // designs were measured on a 30-question golden set, and the obvious ones both lost:
+    //
+    //   baseline, no phrasings ............. hit@1 11/30  MRR 0.509
+    //   text+phrasings in one vector ....... hit@1 10/30  MRR 0.509   (no change at all)
+    //   phrasings as one vector, max() ..... hit@1 13/30  MRR 0.553   <- this
+    //   one vector PER phrasing, max() ..... hit@1  7/30  MRR 0.442   (much worse)
+    //
+    // Folding the phrasings into the fact's vector does nothing: a static embedding
+    // averages its tokens, so five short questions bolted onto a 400-character fact
+    // barely move the centroid.
+    //
+    // Embedding each phrasing SEPARATELY is worse than doing nothing, which is the
+    // counter-intuitive one. max() over many short vectors is a best-of-N draw, and with
+    // ~600 of them in scope some unrelated fact's phrasing out-scores the right fact's
+    // own text on almost any query. More candidates is not more signal.
+    //
+    // The fact's own embedding is never touched either way, so nothing that already
+    // worked can regress.
+    let _ = conn.execute("ALTER TABLE memories ADD COLUMN alias_embedding BLOB", []);
     Ok(())
 }
 
@@ -224,6 +251,26 @@ pub fn remember(
     Ok(id)
 }
 
+/// Attach (or with `None`, remove) alternate phrasings and embed them separately.
+///
+/// The fact's own `embedding` is deliberately left untouched. Phrasings are additive: a
+/// question that already reaches a fact must keep reaching it at the same rank, and the
+/// only way to promise that is to not move the vector it matched.
+pub fn set_aliases(
+    conn: &Connection,
+    embedder: &dyn Embedder,
+    id: &str,
+    aliases: Option<&str>,
+) -> rusqlite::Result<bool> {
+    let cleaned = aliases.map(str::trim).filter(|a| !a.is_empty());
+    let vec = cleaned.map(|a| encode(&embedder.embed(a)));
+    let n = conn.execute(
+        "UPDATE memories SET aliases = ?1, alias_embedding = ?2 WHERE id = ?3",
+        params![cleaned, vec, id],
+    )?;
+    Ok(n > 0)
+}
+
 /// Mark `old_id` superseded by `new_id` so it stops being recalled but stays auditable.
 pub fn supersede(conn: &Connection, old_id: &str, new_id: &str) -> rusqlite::Result<bool> {
     let n = conn.execute(
@@ -305,7 +352,8 @@ pub fn recall(
     let placeholders = vec!["?"; datasets.len()].join(",");
     let sql = format!(
         "SELECT id, dataset, text, embedding, created_ts, \
-                COALESCE(last_used, created_ts), COALESCE(use_count, 0) FROM memories \
+                COALESCE(last_used, created_ts), COALESCE(use_count, 0), alias_embedding \
+         FROM memories \
          WHERE superseded IS NULL AND dataset IN ({placeholders})"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -322,18 +370,27 @@ pub fn recall(
             decode(&r.get::<_, Vec<u8>>(3)?),
             r.get::<_, String>(5)?,
             r.get::<_, i64>(6)?,
+            r.get::<_, Option<Vec<u8>>>(7)?.map(|b| decode(&b)),
         ))
     })?;
 
     let now = now_epoch_days();
     let mut hits: Vec<Hit> = Vec::new();
     for row in rows {
-        let (memory, vec, touched, uses) = row?;
+        let (memory, vec, touched, uses, alias_vec) = row?;
         // Similarity says a fact MATCHES; usefulness says it has earned being read. A
         // fact recalled weekly and one never returned since the day it was written used
         // to rank identically, and only similarity decided between them.
         let age = (now - epoch_days(&touched)).max(0.0);
-        hits.push(Hit { score: cosine(&q, &vec) * usefulness(uses, age) as f32, memory });
+        // max(), not a blend: the phrasings exist precisely for the query the fact's own
+        // wording cannot answer, so averaging them back together would re-drown the
+        // signal they were written to provide. A fact is reachable by what it SAYS or by
+        // how someone would ASK for it, whichever fits better.
+        let sim = match &alias_vec {
+            Some(a) => cosine(&q, &vec).max(cosine(&q, a)),
+            None => cosine(&q, &vec),
+        };
+        hits.push(Hit { score: sim * usefulness(uses, age) as f32, memory });
     }
     // HYBRID RERANK. Dense similarity finds the right neighbourhood but orders within it
     // poorly: measured on this store, 12 of 35 semantic queries put the correct fact at
@@ -528,6 +585,83 @@ mod tests {
 
     fn emb() -> HashEmbedder {
         HashEmbedder::new(64)
+    }
+
+    #[test]
+    fn phrasings_never_touch_the_facts_own_vector() {
+        // Additive means additive. If attaching phrasings moved the fact's embedding, a
+        // query that already found it could start finding something else — paying for
+        // abstract queries with the direct ones, which is a worse store.
+        let (c, e) = (db(), emb());
+        let id = remember(&c, &e, "ds", "he is a product engineer", "2026-08-01").unwrap();
+        let before: Vec<u8> =
+            c.query_row("SELECT embedding FROM memories WHERE id=?1", [&id], |r| r.get(0))
+                .unwrap();
+        assert!(set_aliases(&c, &e, &id, Some("what does he do for a living")).unwrap());
+        let (text, aliases, after): (String, Option<String>, Vec<u8>) = c
+            .query_row("SELECT text, aliases, embedding FROM memories WHERE id=?1", [&id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        let alias_rows = alias_state(&c, &id).1;
+        assert_eq!(text, "he is a product engineer", "the fact itself must not change");
+        assert_eq!(aliases.as_deref(), Some("what does he do for a living"));
+        assert_eq!(before, after, "the fact's own vector must be untouched");
+        assert_eq!(alias_rows, 1, "the phrasing needs a vector of its own");
+    }
+
+    #[test]
+    fn a_query_matching_only_a_phrasing_still_finds_the_fact() {
+        // THE regression this feature exists for. Scored against the fact's text alone,
+        // a question sharing none of its words is unreachable at any depth.
+        let (c, e) = (db(), emb());
+        let id = remember(&c, &e, "ds", "kettle boils at one hundred", "2026-08-01").unwrap();
+        remember(&c, &e, "ds", "a totally unrelated note about invoices", "2026-08-01").unwrap();
+        set_aliases(&c, &e, &id, Some("how hot does water get")).unwrap();
+        let hits = recall(&c, &e, &["ds".to_string()], "how hot does water get", 1).unwrap();
+        assert_eq!(hits[0].memory.id, id);
+    }
+
+    #[test]
+    fn clearing_phrasings_removes_their_vector_too() {
+        // Reversibility is what makes a bulk pass safe to run. Leaving the vector behind
+        // would keep matching questions for phrasings the store no longer admits to.
+        let (c, e) = (db(), emb());
+        let id = remember(&c, &e, "ds", "some durable fact", "2026-08-01").unwrap();
+        set_aliases(&c, &e, &id, Some("a phrasing")).unwrap();
+        set_aliases(&c, &e, &id, None).unwrap();
+        let (aliases, rows) = alias_state(&c, &id);
+        assert_eq!(aliases, None);
+        assert_eq!(rows, 0);
+    }
+
+    /// The phrasing list and the vectors that back it, which must never disagree.
+    fn alias_state(c: &Connection, id: &str) -> (Option<String>, i64) {
+        let a = c
+            .query_row("SELECT aliases FROM memories WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        let v: Option<Vec<u8>> = c
+            .query_row("SELECT alias_embedding FROM memories WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        (a, v.is_some() as i64)
+    }
+
+    #[test]
+    fn whitespace_only_phrasings_are_the_same_as_none() {
+        // A model that answers with a blank line must not leave a fact carrying an alias
+        // column that reads as configured while contributing nothing.
+        let (c, e) = (db(), emb());
+        let id = remember(&c, &e, "ds", "a fact", "2026-08-01").unwrap();
+        set_aliases(&c, &e, &id, Some("   \n ")).unwrap();
+        let (aliases, rows) = alias_state(&c, &id);
+        assert_eq!(aliases, None);
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn setting_aliases_on_a_missing_fact_is_false_not_an_error() {
+        let (c, e) = (db(), emb());
+        assert!(!set_aliases(&c, &e, "no-such-id", Some("q")).unwrap());
     }
 
     #[test]

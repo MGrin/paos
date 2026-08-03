@@ -100,6 +100,11 @@ pub enum Request {
         all_scopes: bool,
 },
     Forget { id: String },
+    /// Attach alternate phrasings to a fact and re-embed it; `None` removes them.
+    ///
+    /// A write, so it belongs to the daemon like every other: the phrasings change the
+    /// stored vector, and a client editing that directly would be a second writer.
+    SetAliases { id: String, aliases: Option<String> },
     /// Store `text` and retire `old_id` in its favour, keeping the original auditable.
     ///
     /// `memories.superseded` and `paos_memory::supersede` both existed, every reader

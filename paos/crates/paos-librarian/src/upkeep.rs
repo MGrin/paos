@@ -171,6 +171,70 @@ pub fn plan_split(raw: &str, original: &str) -> Result<Vec<String>, SplitRefusal
     Ok(parts)
 }
 
+/// Most of a phrasing's words must be NEW, or it is not worth embedding.
+const PHRASING_NOVELTY: f64 = 0.5;
+
+/// At most this many phrasings per fact. The phrasings are embedded together with the
+/// fact, so an unbounded list would drag the fact's vector toward the questions and away
+/// from the fact — fixing abstract queries by breaking direct ones.
+pub const MAX_PHRASINGS: usize = 5;
+
+/// Turn a model's answer into the phrasings worth storing, or `None`.
+///
+/// Filters rather than refuses: a model that returns two good questions and one that
+/// parrots the fact should contribute the two, not be discarded. The novelty rule is
+/// doing the real work — a question built from the fact's own words adds nothing to an
+/// embedding that already contains them, so storing it costs vector drift for no recall.
+pub fn plan_phrasings(raw: &str, fact: &str) -> Option<String> {
+    let known = distinctive(fact);
+    let kept: Vec<String> = parse_candidates(raw)
+        .into_iter()
+        .map(|c| c.text.trim().to_string())
+        .filter(|q| !q.is_empty() && q.chars().count() <= 120)
+        .filter(|q| {
+            let words = distinctive(q);
+            if words.is_empty() {
+                return false;
+            }
+            let fresh = words.iter().filter(|w| !known.contains(*w)).count() as f64;
+            fresh / words.len() as f64 >= PHRASING_NOVELTY
+        })
+        .take(MAX_PHRASINGS)
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(kept.join("\n"))
+}
+
+/// Question scaffolding. Every question contains several of these, and counting them as
+/// novel vocabulary would let any question clear the novelty bar simply by being a
+/// question — the filter would pass everything while appearing to be strict.
+const SCAFFOLDING: &[&str] = &[
+    "what", "when", "where", "which", "whose", "does", "should", "would", "could", "will",
+    "this", "that", "these", "those", "with", "from", "have", "into", "your", "they",
+    "them", "about", "after", "before", "again", "some", "there", "here", "been", "being",
+    "doing", "than", "then", "happen", "happens", "supposed",
+];
+
+/// Content words of 4+ characters, crudely singularised.
+///
+/// The length floor matches recall's lexical term, so "novel" means novel to the signal
+/// that actually does the matching. The plural strip exists because without it "discard"
+/// reads as new vocabulary next to "discards" — a question that parrots the fact would
+/// pass the novelty check on grammar alone.
+fn distinctive(s: &str) -> std::collections::HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 4)
+        .map(|w| w.to_ascii_lowercase())
+        .filter(|w| !SCAFFOLDING.contains(&w.as_str()))
+        .map(|w| match w.strip_suffix('s') {
+            Some(stem) if stem.len() >= 4 && !w.ends_with("ss") => stem.to_string(),
+            _ => w,
+        })
+        .collect()
+}
+
 /// The rationale a split proposal carries.
 pub fn split_rationale(original: &str, parts: usize) -> String {
     format!("unbundle {} chars into {} atomic facts", original.chars().count(), parts)
@@ -182,6 +246,47 @@ mod tests {
 
     fn f(id: &str, text: &str) -> Fact {
         Fact { id: id.into(), text: text.into() }
+    }
+
+    #[test]
+    fn a_phrasing_built_from_the_facts_own_words_is_dropped() {
+        // It is already in the embedding. Storing it buys nothing and drags the vector.
+        let fact = "the wizard stores runtime_config.tap and discards the pip_url";
+        let raw = r#"[{"text":"why does the wizard discard the pip_url"},
+                      {"text":"my connector installed the wrong package"}]"#;
+        let out = plan_phrasings(raw, fact).unwrap();
+        assert_eq!(out, "my connector installed the wrong package");
+    }
+
+    #[test]
+    fn a_useful_paraphrase_survives_even_sharing_a_word() {
+        // The rule is majority-new, not zero-overlap: demanding no shared word at all
+        // would throw away the natural way to ask about a named thing.
+        let fact = "credentials for this machine live in the login keychain";
+        let raw = r#"[{"text":"where do I find the stored password"}]"#;
+        assert_eq!(
+            plan_phrasings(raw, fact).unwrap(),
+            "where do I find the stored password"
+        );
+    }
+
+    #[test]
+    fn no_usable_phrasing_is_none_not_an_empty_string() {
+        // An empty string would be written to the column and re-embed the fact for
+        // nothing, so the pass would report work it did not do.
+        let fact = "the wizard stores runtime_config and discards the pip_url";
+        assert!(plan_phrasings(r#"[]"#, fact).is_none());
+        assert!(plan_phrasings(r#"[{"text":"the wizard discards pip_url"}]"#, fact).is_none());
+    }
+
+    #[test]
+    fn the_number_of_phrasings_is_capped() {
+        let fact = "some fact about nothing in particular";
+        let raw = r#"[{"text":"alpha bravo charlie"},{"text":"delta echo foxtrot"},
+                      {"text":"golf hotel india"},{"text":"juliett kilo lima"},
+                      {"text":"mike november oscar"},{"text":"papa quebec romeo"}]"#;
+        let out = plan_phrasings(raw, fact).unwrap();
+        assert_eq!(out.lines().count(), MAX_PHRASINGS);
     }
 
     #[test]

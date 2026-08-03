@@ -79,7 +79,7 @@ paos memory remember --global|--org|--project "<fact>"    # scope is MANDATORY
   succeeds or says why.
 - **`forget` is gated**: run it without `--force` first, show the operator the preview.
 
-Librarian (`draft`/`review`/`approve`, plus `tidy` and `split` upkeep), dream, and
+Librarian (`draft`/`review`/`approve`, plus `tidy`, `split` and `phrasings` upkeep), dream, and
 supersede detail: **`references/memory-usage.md`**.
 
 `paos doctor` answers "is any of this quietly broken?" — it checks end states with

@@ -46,6 +46,12 @@ re-deriving or re-scanning something you already knew is not.
   `paos memory review` lists pending proposals; `paos memory approve <id>|--all` /
   `reject <id>` resolve them. Nothing is written to long-term memory without an
   explicit approve.
+- **Phrasings:** `paos memory phrasings [--dataset <ds>] [--limit N] [--dry-run]` attaches
+  the questions a fact answers, so a query that shares none of its words can still reach
+  it. The phrasings are embedded and **never displayed** — the fact itself is untouched —
+  so this one writes directly instead of queueing. Measured on a 30-question golden set:
+  hit@1 11/30 → 13/30, MRR 0.509 → 0.553. `--clear` reverses a pass; `--reembed`
+  re-vectorises phrasings already on disk without paying the model again.
 - **Dream (learn from past sessions):** `paos memory dream [--since 24h] [--limit N]
   [--session <id>] [--dry-run]` reads recent **Claude Code** sessions (via the
   `trajectory` facet), normalizes + chunks them, and distills each into candidate

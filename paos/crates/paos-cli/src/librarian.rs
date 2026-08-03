@@ -124,6 +124,156 @@ fn facts(db: &std::path::Path, dataset: &str, limit: usize, min_chars: Option<us
     out.unwrap_or_default()
 }
 
+/// Live facts in one dataset that carry no phrasings yet, newest first.
+///
+/// Newest first, not longest first like `facts`: this pass is not looking for bundled
+/// entries, and a fact written today is the one an agent is most likely to ask about
+/// tomorrow. Skipping facts that already have phrasings is what makes the pass
+/// resumable — it can be run in batches and never pays for the same fact twice.
+fn facts_without_phrasings(db: &std::path::Path, dataset: &str, limit: usize)
+    -> Vec<lib::upkeep::Fact>
+{
+    let Some(c) = read_only(db) else { return Vec::new() };
+    let out = c
+        .prepare(
+            "SELECT id, text FROM memories \
+             WHERE dataset=?1 AND superseded IS NULL \
+               AND (aliases IS NULL OR aliases='') \
+             ORDER BY created_ts DESC LIMIT ?2",
+        )
+        .and_then(|mut st| {
+            st.query_map(rusqlite::params![dataset, limit as i64], |r| {
+                Ok(lib::upkeep::Fact { id: r.get(0)?, text: r.get(1)? })
+            })
+            .and_then(|it| it.collect())
+        });
+    out.unwrap_or_default()
+}
+
+/// Attach the questions a fact answers, so an abstract query can reach it.
+///
+/// This writes DIRECTLY rather than queueing a proposal, and that is a deliberate
+/// departure from tidy/split/draft. Those change what a fact SAYS, so a human has to
+/// see them. Phrasings are additive metadata that never appear in any output, and
+/// queueing two hundred of them would bury the proposals that do need reading — which is
+/// exactly how the review queue became unreadable once before.
+fn cmd_phrasings<F>(args: &[String], db: &std::path::Path, send: &F) -> i32
+where
+    F: Fn(&Request) -> Option<Response>,
+{
+    let dry = flag(args, "--dry-run");
+    let clear = flag(args, "--clear");
+    let ds = value(args, "--dataset").unwrap_or_else(|| scope_dataset(db, scope_of(args).as_deref()));
+    let limit = num(args, "--limit", 25);
+
+    if clear {
+        // Reversibility, and it must not depend on the model: a pass that made recall
+        // worse has to be undoable when the thing that made it worse is the generator.
+        let ids: Vec<String> = phrased(db, &ds, limit).into_iter().map(|(i, _)| i).collect();
+        println!("{ds}: clearing phrasings from {} fact(s){}", ids.len(),
+                 if dry { " [dry-run]" } else { "" });
+        if dry {
+            return 0;
+        }
+        let mut cleared = 0usize;
+        for id in &ids {
+            if matches!(send(&Request::SetAliases { id: id.clone(), aliases: None }),
+                        Some(Response::Ok { .. })) {
+                cleared += 1;
+            }
+        }
+        println!("  cleared {cleared}");
+        return 0;
+    }
+
+    if flag(args, "--reembed") {
+        // Re-vectorise phrasings already on disk, without paying the model again. The
+        // phrasings are the expensive part and they do not change; only how they are
+        // embedded does. Without this, changing the embedding scheme means regenerating
+        // text that was already correct.
+        let rows = phrased(db, &ds, limit);
+        println!("{ds}: re-embedding {} fact(s) with phrasings{}", rows.len(),
+                 if dry { " [dry-run]" } else { "" });
+        if dry {
+            return 0;
+        }
+        let mut done = 0usize;
+        for (id, aliases) in &rows {
+            if matches!(send(&Request::SetAliases { id: id.clone(), aliases: Some(aliases.clone()) }),
+                        Some(Response::Ok { .. })) {
+                done += 1;
+            }
+        }
+        println!("  re-embedded {done}");
+        return 0;
+    }
+
+    let rows = facts_without_phrasings(db, &ds, limit);
+    println!("{ds}: {} fact(s) without phrasings{}", rows.len(),
+             if dry { " [dry-run]" } else { "" });
+    let b = backend(db);
+    let (mut done, mut unread, mut declined) = (0usize, 0usize, 0usize);
+    for f in &rows {
+        let Some(raw) = lib::draft::complete(lib::prompts::PHRASINGS_SYS, &f.text, &b) else {
+            unread += 1;
+            continue;
+        };
+        // A decline is indistinguishable from a bad prompt without seeing the answer, and
+        // "N left alone" reads like a considered judgement either way.
+        if std::env::var("PAOS_LIBRARIAN_DEBUG").is_ok() {
+            eprintln!("  [debug] {} <- {raw}", f.id.chars().take(8).collect::<String>());
+        }
+        let Some(phrasings) = lib::upkeep::plan_phrasings(&raw, &f.text) else {
+            declined += 1;
+            continue;
+        };
+        if dry {
+            println!("  {}", f.id.chars().take(8).collect::<String>());
+            for p in phrasings.lines() {
+                println!("     · {p}");
+            }
+            done += 1;
+            continue;
+        }
+        match send(&Request::SetAliases { id: f.id.clone(), aliases: Some(phrasings) }) {
+            Some(Response::Ok { .. }) => done += 1,
+            Some(Response::Err { message, .. }) => eprintln!("  {}: {message}", f.id),
+            None => {
+                // Every remaining fact would fail the same way, and a run that prints two
+                // hundred identical errors hides the one line that matters.
+                eprintln!("  paosd unreachable — stopping after {done}");
+                break;
+            }
+        }
+    }
+    if unread > 0 {
+        println!("  ⚠ {unread} unread — the model did not answer");
+    }
+    if declined > 0 {
+        println!("  {declined} left alone: no phrasing used enough new words to be worth embedding");
+    }
+    println!("  {done} fact(s) now carry phrasings");
+    0
+}
+
+/// Facts in one dataset that DO carry phrasings — the inverse of the pass, for `--clear`
+/// and `--reembed`.
+fn phrased(db: &std::path::Path, dataset: &str, limit: usize) -> Vec<(String, String)> {
+    let Some(c) = read_only(db) else { return Vec::new() };
+    let out = c
+        .prepare(
+            "SELECT id, aliases FROM memories \
+             WHERE dataset=?1 AND aliases IS NOT NULL AND aliases<>'' LIMIT ?2",
+        )
+        .and_then(|mut st| {
+            st.query_map(rusqlite::params![dataset, limit as i64], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .and_then(|it| it.collect())
+        });
+    out.unwrap_or_default()
+}
+
 pub fn run<F>(cmd: &str, positional: &[String], args: &[String], db: &std::path::Path,
               send: F) -> i32
 where
@@ -132,6 +282,7 @@ where
     match cmd {
         "tidy" => cmd_tidy(args, db, &send),
         "split" => cmd_split(args, db, &send),
+        "phrasings" => cmd_phrasings(args, db, &send),
         "draft" => cmd_draft(positional, args, db, &send),
         "lessons" => cmd_lessons(args, db, &send),
         "dream" => cmd_dream(args, db, &send),

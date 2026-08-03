@@ -11,17 +11,26 @@ the core, and everything except the Telegram bridge works offline.
 ## Install
 
 ```sh
-cargo build --release
-install -m 755 target/release/paosd ~/.local/bin/paosd
-install -m 755 target/release/paos  ~/.local/bin/paos
+git clone https://github.com/MGrin/paos.git && cd paos
+./install.sh
 paos init
 ```
 
-`paos init` creates the store, downloads the embedding model (129 MB, once), and — if you
-want it — configures Telegram. It asks for a bot token and then learns your chat and user
+`install.sh` builds both binaries, installs the skill where Claude Code looks for it
+(`~/.claude/skills/paos`), installs and STARTS the daemon, and then checks it actually
+answers before claiming success. Re-running it is safe.
+
+The daemon matters more than it looks: `paos` is a thin client, so without one running
+every command fails with "cannot reach paosd" — and nothing would tell you the daemon had
+simply never been started.
+
+`paos init` then creates the store, downloads the embedding model (129 MB, once), and — if
+you want it — configures Telegram. It asks for a bot token and learns your chat and user
 id from your first message to the bot, so you never have to find a numeric Telegram id.
 
 Telegram is optional. Memory, the bus and the dashboard all work without it.
+
+Prefer to do it by hand? `install.sh` is 80 lines of shell and says why at each step.
 
 ## Architecture
 

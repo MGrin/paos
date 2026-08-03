@@ -111,10 +111,11 @@ fn run() -> io::Result<()> {
             paos_operator::telegram::Config::from_db_or_env(&g, &env_path)
         };
         match tg {
-            Some(cfg) => {
-                eprintln!("paosd: telegram bridge active");
-                bridge::spawn(Arc::clone(&conn), cfg, Arc::clone(&embedder));
-            }
+            // Deliberately NOT announcing "active" here. spawn() can still refuse — an
+            // uninstalled binary must not bridge — and printing the claim first put
+            // "telegram bridge active" one line ABOVE "bridge disabled" in the log,
+            // which is a log that lies to whoever stops reading at the good news.
+            Some(cfg) => bridge::spawn(Arc::clone(&conn), cfg, Arc::clone(&embedder)),
             None => eprintln!("paosd: telegram not configured — bridge disabled"),
         }
     }

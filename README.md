@@ -47,6 +47,13 @@ stores `keychain:paos/telegram_bot_token` or `env:PAOS_TELEGRAM_BOT_TOKEN`, neve
 which is what lets the settings page report a token as configured or missing without ever
 holding it.
 
+## Status
+
+Working software, one maintainer, one machine in daily use. The internals are stable
+enough that the daemon has run for weeks at a time; the packaging is new, and you are
+likely to be the second person ever to run `paos init`. Issues about that are the most
+useful ones right now.
+
 ## Honest limits
 
 - **macOS first.** The Keychain backend, the LaunchAgent and the Übersicht widget are Mac.
@@ -57,9 +64,11 @@ holding it.
 
 ## Build and test
 
-`cargo build --release` · `cargo test` (≈960 tests, all offline)
+`cargo build --release` · `cargo test` — 967 tests, all offline: no network, no daemon,
+no Telegram. If they do not pass on a clean checkout, that is a bug worth an issue.
 
-Design notes: `docs/superpowers/specs/2026-07-29-paos-rearchitecture-design.md`.
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) · Security: [SECURITY.md](SECURITY.md)
+
 
 ## Licence
 

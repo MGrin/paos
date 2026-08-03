@@ -77,16 +77,67 @@ pub fn spawn(
     // four hours stealing the operator's messages, and the only symptom was that he had
     // to say "you're not reading me" twice. The lock is on the TOKEN because that is what
     // is actually shared, not the database.
+    // THE LOCK IS NOT ENOUGH, and 2026-08-03 proved it: it is first-come, so a binary
+    // built in a scratch checkout can beat the real daemon to it — and then the REAL
+    // daemon disables its own bridge and says so only on stderr nobody reads. The
+    // operator spent hours with commands that intermittently did nothing.
+    //
+    // Note what does NOT save you: unsetting TELEGRAM_BOT_TOKEN. `main` reads
+    // `$HOME/.claude/skills/paos/.env` by absolute path, so ANY paosd anywhere finds the
+    // real token whether or not it is in the environment.
+    //
+    // So the installed binary is the only one allowed to bridge. `PAOS_ALLOW_BRIDGE=1`
+    // exists for the person who genuinely means to run an uninstalled build against the
+    // real bot; it has to be typed, which is the whole point.
+    if !may_bridge(&std::env::current_exe().ok(), &std::env::var("PAOS_ALLOW_BRIDGE").ok(),
+                   &installed_paosd()) {
+        eprintln!("paosd: this is not the installed binary — Telegram bridge disabled. \
+                   A second consumer silently eats the operator's messages. Set \
+                   PAOS_ALLOW_BRIDGE=1 if you really mean it.");
+        return;
+    }
     if !claim_telegram(&cfg) {
         eprintln!("paosd: another process already owns this Telegram bot — bridge disabled \
                    in this instance (that is correct; two consumers lose messages)");
         return;
     }
+    eprintln!("paosd: telegram bridge active");
     let inbound = Arc::clone(&conn);
     let c_in = cfg.clone();
     std::thread::spawn(move || inbound_loop(inbound, c_in, embedder));
 
     std::thread::spawn(move || outbound_loop(conn, cfg));
+}
+
+/// Where the installed daemon lives. The LaunchAgent hardcodes this path.
+fn installed_paosd() -> std::path::PathBuf {
+    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/bin/paosd")
+}
+
+/// May THIS binary own the Telegram bridge?
+///
+/// Pure, and separate from the environment it reads, because the failure it prevents is
+/// invisible from inside the process that causes it — the stray daemon looks healthy and
+/// the real one goes quiet.
+fn may_bridge(
+    current: &Option<std::path::PathBuf>,
+    allow: &Option<String>,
+    installed: &std::path::Path,
+) -> bool {
+    if allow.as_deref().is_some_and(|v| v == "1") {
+        return true;
+    }
+    match current {
+        // Canonicalise both sides: ~/.local/bin is a symlink on some machines, and a
+        // string compare would then refuse the real daemon.
+        Some(c) => {
+            let norm = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or(p.to_path_buf());
+            norm(c) == norm(installed)
+        }
+        // Cannot tell what we are. Refuse: a wrongly-silent bridge is recoverable by
+        // restarting the daemon, a wrongly-active one eats the operator's messages.
+        None => false,
+    }
 }
 
 /// Take a machine-wide advisory lock on this bot token, held for the process lifetime.
@@ -615,10 +666,25 @@ fn handle_message(
             }
             return;
         }
-        if let Some(session) = op::session_by_message_id(conn, mid) {
-            let _ = post_as_operator(conn, "lobby", &format!("@{session}"),
-                                    &format!("📱 operator: {t}"), false);
-            return;
+        // A COMMAND typed as a reply is a command, not chatter.
+        //
+        // This branch used to swallow it: quote-replying to a session's message and
+        // typing `/tasks` relayed the literal string to that session and returned, so the
+        // command never ran and nothing said so. Recorded on the bus 2026-08-03 as
+        // `operator -> @dapper-shrike: 📱 operator: /tasks`. It also explains why
+        // commands "worked sometimes" — they work from a new message and vanish from a
+        // reply, and in a topic where a session is talking to you, replying is the
+        // natural gesture.
+        //
+        // The escalation branch above KEEPS priority on purpose: an answer is free text,
+        // and "[answer to #45] public now" is a legitimate reply that happens to start
+        // with no slash. Only this branch defers.
+        if !is_command(t) {
+            if let Some(session) = op::session_by_message_id(conn, mid) {
+                let _ = post_as_operator(conn, "lobby", &format!("@{session}"),
+                                        &format!("📱 operator: {t}"), false);
+                return;
+            }
         }
     }
     // Telegram appends `@botname` to a command whenever it is sent in a group — which
@@ -927,6 +993,15 @@ fn mode_from_label(t: &str) -> Option<op::Mode> {
         // standalone message qualify.
         _ => None,
     }
+}
+
+/// Would this text be handled as a command?
+///
+/// Used to decide whether a QUOTE-REPLY is a command or a message to relay. Kept as one
+/// predicate so the answer cannot differ from what the parser below actually does.
+fn is_command(t: &str) -> bool {
+    t.trim_start().starts_with('/') || command_from_label(t).is_some()
+        || mode_from_label(t).is_some()
 }
 
 /// A phone keyboard button label, e.g. "📊 Digest" or "👥 Fleet", turned into its command.
@@ -2353,6 +2428,68 @@ mod tests {
             assert!(rows.contains(&format!("panel:{what}")), "{what} has no button");
             assert!(view(&c, what).is_some(), "{what} has no renderer");
         }
+    }
+
+    #[test]
+    fn a_command_typed_as_a_reply_still_runs() {
+        // THE BUG THAT MADE HIS COMMANDS "SOMETIMES DO NOTHING". Replying to a session's
+        // message and typing /tasks relayed the literal string to that session and
+        // returned — the command never ran and nothing said so. In a topic where a
+        // session is talking to you, replying is the natural gesture, so this was most
+        // of the time.
+        let mut c = db();
+        c.execute("INSERT INTO sessions(name, session_id, updated_ts) \
+                   VALUES('swift-otter','s1','t')", []).unwrap();
+        let mid = 4242;
+        c.execute("INSERT INTO tg_message_map(message_id, session, created_ts) \
+                   VALUES(?1,'swift-otter','t')", [mid]).unwrap();
+        handle_message(&mut c, &cfg(), "/tasks", None, Some(mid), None);
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "a command replied to a session must RUN, not be relayed as chatter");
+    }
+
+    #[test]
+    fn a_real_message_typed_as_a_reply_still_reaches_that_session() {
+        // The behaviour worth keeping: replying to a session IS how you steer it.
+        let mut c = db();
+        c.execute("INSERT INTO sessions(name, session_id, updated_ts) \
+                   VALUES('swift-otter','s1','t')", []).unwrap();
+        let mid = 4243;
+        c.execute("INSERT INTO tg_message_map(message_id, session, created_ts) \
+                   VALUES(?1,'swift-otter','t')", [mid]).unwrap();
+        handle_message(&mut c, &cfg(), "rebase onto main first", None, Some(mid), None);
+        let (target, text): (String, String) = c
+            .query_row("SELECT target, text FROM messages ORDER BY id DESC LIMIT 1",
+                       [], |r| Ok((r.get(0)?, r.get(1)?))).expect("relayed");
+        assert_eq!(target, "@swift-otter");
+        assert!(text.contains("rebase onto main"), "{text}");
+    }
+
+    #[test]
+    fn only_the_installed_binary_may_own_the_bridge() {
+        // 2026-08-03: a paosd built in a scratch checkout beat the real daemon to the
+        // token lock, so the REAL one disabled its bridge and the operator's commands
+        // intermittently did nothing for hours. The lock is first-come; this is not.
+        let installed = std::path::Path::new("/usr/local/bin/paosd");
+        assert!(may_bridge(&Some(installed.to_path_buf()), &None, installed));
+        assert!(!may_bridge(&Some("/tmp/scratch/target/debug/paosd".into()), &None, installed),
+                "a scratch build must not race the daemon for the operator's messages");
+    }
+
+    #[test]
+    fn an_explicit_opt_in_still_works_because_someone_will_mean_it() {
+        let installed = std::path::Path::new("/usr/local/bin/paosd");
+        assert!(may_bridge(&Some("/tmp/x/paosd".into()), &Some("1".into()), installed));
+        assert!(!may_bridge(&Some("/tmp/x/paosd".into()), &Some("0".into()), installed),
+                "only an explicit 1 — a stray PAOS_ALLOW_BRIDGE= in a shell profile is \
+                 not consent");
+    }
+
+    #[test]
+    fn not_knowing_what_we_are_refuses_rather_than_risks_it() {
+        // A wrongly-silent bridge is fixed by restarting the daemon. A wrongly-active one
+        // eats the operator's messages and reports nothing.
+        assert!(!may_bridge(&None, &None, std::path::Path::new("/usr/local/bin/paosd")));
     }
 
     #[test]

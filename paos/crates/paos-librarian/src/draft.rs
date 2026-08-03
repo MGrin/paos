@@ -368,3 +368,78 @@ mod tests {
         assert!(distill_with(unavailable, "   ", None, true).is_empty());
     }
 }
+
+// --- contradictions ---------------------------------------------------------------
+//
+// A fact that RESTATES an existing one already becomes a supersede: `near_duplicate`
+// catches it above the 0.82 ratio. A fact that CONTRADICTS one does not — it is about the
+// same thing in different words, which scores well below that, so both were stored and
+// both came back at recall.
+//
+// Measured 2026-08-03: recall for the Telegram-token question returned a refuted note
+// ABOVE its own correction. Nothing had noticed the two were mutually exclusive.
+
+/// Lexically close enough to be about the same thing, not close enough to be a
+/// restatement.
+///
+/// The upper bound is the supersede threshold — above it the existing path already
+/// handles the pair, and asking again would queue the same decision twice. The lower
+/// bound is where "same subject" stops: below it, pairs share vocabulary and nothing
+/// else, and every one of them would cost an LLM call and a line in the review queue.
+pub fn is_contradiction_candidate(ratio: f64, supersede_threshold: f64) -> bool {
+    (0.55..supersede_threshold).contains(&ratio)
+}
+
+/// The ids the model says are contradicted, from its JSON reply.
+///
+/// Unknown ids are dropped rather than trusted: the model is given a list and asked to
+/// echo from it, and a hallucinated id would queue a proposal to retire a fact that does
+/// not exist — which then fails at apply time, long after anyone could tell why.
+pub fn parse_contradictions(raw: &str, offered: &[String]) -> Vec<String> {
+    let Some(start) = raw.find('[') else { return Vec::new() };
+    let Some(end) = raw.rfind(']') else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw[start..=end]) else {
+        return Vec::new();
+    };
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(str::to_string)
+                .filter(|id| offered.iter().any(|o| o == id))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod contradiction_tests {
+    use super::*;
+
+    #[test]
+    fn the_band_sits_below_supersede_and_above_mere_vocabulary() {
+        // Above the threshold the supersede path already owns the pair; asking again
+        // would put the same decision in the queue twice.
+        assert!(!is_contradiction_candidate(0.90, 0.82));
+        assert!(is_contradiction_candidate(0.70, 0.82));
+        // Below the band, pairs share words and nothing else — every one would cost an
+        // LLM call and a line in a queue the operator then stops reading.
+        assert!(!is_contradiction_candidate(0.30, 0.82));
+    }
+
+    #[test]
+    fn only_ids_that_were_offered_come_back() {
+        // A hallucinated id would queue a proposal to retire a fact that does not exist,
+        // which fails at apply time long after anyone could connect it to this.
+        let offered = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(parse_contradictions(r#"["a","zz"]"#, &offered), vec!["a"]);
+    }
+
+    #[test]
+    fn prose_around_the_json_is_tolerated_and_nothing_is_not_an_error() {
+        let offered = vec!["a".to_string()];
+        assert_eq!(parse_contradictions("Sure! [\"a\"] hope that helps", &offered), vec!["a"]);
+        assert!(parse_contradictions("[]", &offered).is_empty());
+        assert!(parse_contradictions("I could not tell", &offered).is_empty());
+    }
+}

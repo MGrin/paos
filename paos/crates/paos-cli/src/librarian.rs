@@ -285,11 +285,74 @@ where
             println!("  {line}");
             n += 1;
         }
+        // A fact that RESTATES an existing one is already a supersede above. A fact that
+        // CONTRADICTS one is not — it says the same thing differently, scores below the
+        // threshold, and both get stored. Recall then returns the refuted one alongside
+        // its correction, ranked by similarity, which on 2026-08-03 put the wrong answer
+        // first.
+        //
+        // Only pairs in the band are shown to the model, and only when it says they are
+        // mutually exclusive does a proposal appear — the human still decides.
+        for target in contradicted(db, c, &planned.dataset) {
+            if let Some(line) = queue(send, "contradiction", &planned.dataset,
+                                      Some(&planned.text), Some(&planned.scope),
+                                      Some(&target),
+                                      Some("the stored fact says the opposite"), source) {
+                println!("  {line}");
+                n += 1;
+            }
+        }
     }
     if n == 0 {
         println!("nothing durable found");
     }
     0
+}
+
+/// Stored facts the candidate CONTRADICTS, judged by the model.
+///
+/// Two gates before an LLM call, both cheap: the pair must be lexically close enough to
+/// be about the same subject, and below the supersede threshold, where the existing path
+/// already owns it. Without the band this would ask about every fact in the dataset —
+/// hundreds of calls a night to be told "unrelated".
+///
+/// Failure is silence. A missing model, a timeout, or an unparseable reply means no
+/// proposal, never a wrong one: the review queue is only worth reading if what lands in
+/// it is nearly always real.
+fn contradicted(db: &std::path::Path, c: &lib::draft::Candidate, dataset: &str) -> Vec<String> {
+    let backend = backend(db);
+    let Some(conn) = read_only(db) else { return Vec::new() };
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT id, text FROM memories WHERE dataset=?1 AND superseded IS NULL")
+        .and_then(|mut st| {
+            st.query_map([dataset], |r| Ok((r.get(0)?, r.get(1)?))).and_then(|it| it.collect())
+        })
+        .unwrap_or_default();
+    let threshold: f64 = std::env::var("COG_SUPERSEDE_THRESHOLD")
+        .ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0.82);
+
+    let near: Vec<(String, String)> = rows
+        .into_iter()
+        .filter(|(_, text)| !text.is_empty())
+        .filter(|(_, text)| lib::draft::is_contradiction_candidate(
+            paos_memory::difflib::ratio(&c.text, text), threshold))
+        .take(12)   // a bounded prompt; a dataset of hundreds must not become one call
+        .collect();
+    if near.is_empty() {
+        return Vec::new();
+    }
+
+    let offered: Vec<String> = near.iter().map(|(id, _)| id.clone()).collect();
+    let listing = near
+        .iter()
+        .map(|(id, text)| format!("{id}: {text}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let user = format!("NEW FACT:\n{}\n\nEXISTING FACTS:\n{listing}", c.text);
+    match lib::draft::complete(lib::prompts::CONTRADICT_SYS, &user, &backend) {
+        Some(raw) => lib::draft::parse_contradictions(&raw, &offered),
+        None => Vec::new(),
+    }
 }
 
 /// The id of the nearest stored duplicate, if any is over the threshold.

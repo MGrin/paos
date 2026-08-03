@@ -112,7 +112,11 @@ where
         // the column added for exactly this, honoured by every reader — stayed empty
         // across 1051 facts. A cleanup that cannot be audited is indistinguishable from
         // data loss.
-        "supersede" | "tidy" => {
+        // A resolved contradiction IS a supersede: store what is now true and retire
+        // what it refutes. Sharing the path is the point — the ordering that keeps a
+        // failed write from costing the original is the same ordering, and a second
+        // implementation of it would be a second chance to get it wrong.
+        "supersede" | "tidy" | "contradiction" => {
             if text.is_empty() {
                 return Err(Refusal::EmptyReplacement);
             }
@@ -312,6 +316,28 @@ mod tests {
         .unwrap();
         assert_eq!(steps.len(), 1);
         assert!(!consulted.get());
+    }
+
+    #[test]
+    fn a_resolved_contradiction_stores_the_new_fact_and_retires_the_refuted_one() {
+        // The whole point: after approval, recall must stop returning what was
+        // disproved. Anything less leaves the refuted fact ranked above its own
+        // correction, which is what started this.
+        let steps = plan_apply(&proposal("contradiction", Some("the correct thing"),
+                                         Some("old-id")), all_alive)
+            .expect("a contradiction is appliable");
+        assert_eq!(steps, vec![Step::StoreAndRetire {
+            dataset: "ds".into(),
+            text: "the correct thing".into(),
+            old_ids: vec!["old-id".into()],
+        }]);
+    }
+
+    #[test]
+    fn a_contradiction_with_nothing_to_replace_is_refused_not_silently_stored() {
+        assert_eq!(plan_apply(&proposal("contradiction", Some("   "), Some("old-id")),
+                              all_alive),
+                   Err(Refusal::EmptyReplacement));
     }
 
     #[test]

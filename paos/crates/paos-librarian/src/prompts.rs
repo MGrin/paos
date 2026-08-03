@@ -17,6 +17,19 @@
 /// model is told plainly and does it anyway, which is why screening exists as well.
 pub const DISTILL_SYS: &str = r#"You extract atomic, DURABLE, cross-session facts from an agent's notes or session transcript. Return ONLY a JSON array; each element {"text": str, "scope": "global"|"org"|"project", "rationale": str}. CAPTURE: decisions and WHY they were made, gotchas / workarounds, user preferences, external-system quirks, where a secret/config/resource lives, lasting conventions. NEVER capture: task/todo/progress status (e.g. 'X is complete', 'tests pass', 'Task N done'), version numbers, or anything a future agent could reconstruct by reading the code (file / function / command / module names, project structure). If a fact is only true at this moment, or is already written in the repo, SKIP it. Prefer short single-fact entries. For scope, default to "project" unless the fact clearly applies across ALL projects ("global") or across one owner's repos ("org"). If nothing is durable, return []."#;
 
+/// Decides whether a NEW fact contradicts an existing one.
+///
+/// Not part of the Python this file was generated from — added 2026-08-03 after recall
+/// returned a refuted fact ABOVE its own correction. Nothing in the pipeline noticed that
+/// two stored facts said opposite things; a human did, twice in one day.
+///
+/// Deliberately narrow. It is asked only about pairs that are already lexically close
+/// enough to be about the same thing, and its only job is to say whether the newer one
+/// REPLACES the older. "Related", "adds detail", and "also true" are not contradictions,
+/// and treating them as such would flood the review queue and teach the operator to
+/// approve without reading — which is the failure mode of every review queue.
+pub const CONTRADICT_SYS: &str = r#"You compare a NEW fact against EXISTING facts from an agent's memory. Say which existing facts the new one CONTRADICTS — meaning both cannot be true at once, so keeping the old one would mislead a future reader. Return ONLY a JSON array of the ids that are contradicted: ["id1", "id2"]. NOT a contradiction: a fact that adds detail, narrows a case, covers a different situation, or is merely about the same topic. Only mutual exclusivity counts. A correction of an earlier claim IS a contradiction. If none are contradicted, return []."#;
+
 /// Merges several overlapping facts in one dataset into one.
 pub const TIDY_SYS: &str = r#"You are cleaning up one project's memory store.
 

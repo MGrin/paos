@@ -199,8 +199,20 @@ where
     };
     let top_k = value(args, "--top-k").and_then(|v| v.parse().ok()).unwrap_or(8);
     let dataset = value(args, "--dataset");
-    match send(&Request::Recall { origin: crate::git_origin(), query: query.into(), top_k,
-                                  dataset }) {
+    let all_scopes = flag(args, "--all-scopes");
+    let origin = crate::git_origin();
+    // SAY WHICH BRAINS WERE SEARCHED when it is not the ones you would assume.
+    //
+    // Outside a git repo there is no project or org to derive, so recall reads the global
+    // brain alone — 186 facts of 1,260 on this machine — and said NOTHING. From a plain
+    // terminal it therefore looked like a search of everything that simply found little,
+    // which is indistinguishable from a memory that has forgotten what you asked about.
+    if origin.is_none() && dataset.is_none() && !all_scopes {
+        eprintln!("(searched the global brain only — not in a git repo; \
+                   --all-scopes searches every brain)");
+    }
+    match send(&Request::Recall { origin, query: query.into(), top_k,
+                                  dataset, all_scopes }) {
         Some(Response::Ok { lines }) => {
             for l in &lines {
                 println!("{l}");

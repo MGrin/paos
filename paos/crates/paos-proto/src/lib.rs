@@ -90,7 +90,15 @@ pub enum Request {
         top_k: usize,
         #[serde(default)]
         dataset: Option<String>,
-    },
+        /// Search EVERY dataset, not the tiers the cwd implies.
+        ///
+        /// Outside a git repo recall degrades to the global brain alone — 186 facts of
+        /// 1,260 on this machine — and said nothing about it, so it read as a search of
+        /// everything that simply found little. This is the way to ask for everything on
+        /// purpose.
+        #[serde(default)]
+        all_scopes: bool,
+},
     Forget { id: String },
     /// Store `text` and retire `old_id` in its favour, keeping the original auditable.
     ///

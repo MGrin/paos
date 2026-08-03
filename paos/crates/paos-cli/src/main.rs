@@ -381,6 +381,7 @@ fn main() {
             origin: git_origin(),
             query: positional.get(1).cloned().unwrap_or_else(|| fail("recall needs <query>", 2)),
             top_k,
+            all_scopes: false,
         },
         "forget" => Request::Forget {
             id: positional.get(1).cloned().unwrap_or_else(|| fail("forget needs <id>", 2)),
@@ -506,7 +507,11 @@ fn degraded(req: &Request) -> Option<Response> {
         })),
         // The degraded path honours --dataset too, or a sandboxed session would silently
         // search a different set of facts than the daemon would have.
-        Request::Recall { origin, query, top_k, dataset } => Some(read_only_recall_scoped(
+        // all_scopes is deliberately NOT honoured here: the degraded path reads the
+        // database directly and cannot enumerate datasets the way the daemon does, and a
+        // flag that quietly means something narrower than it says is worse than one that
+        // is unavailable.
+        Request::Recall { origin, query, top_k, dataset, .. } => Some(read_only_recall_scoped(
             origin.as_deref(), query, *top_k, dataset.as_deref())),
         // Reads go direct; a config read that failed inside a sandbox would break every
         // consumer that asks for a knob before doing its work.

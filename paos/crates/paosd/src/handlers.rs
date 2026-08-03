@@ -138,13 +138,21 @@ pub fn dispatch(daemon: &Daemon, req: Request) -> Response {
             }
         }
 
-        Request::Recall { origin, query, top_k, dataset } => {
+        Request::Recall { origin, query, top_k, dataset, all_scopes } => {
             // An explicit dataset REPLACES the derived scopes rather than adding to them:
             // the caller asked for one tier, and silently also searching three others
             // would make the flag look like it did nothing.
             let g = lock(daemon);
             let scopes = match dataset.filter(|d| !d.trim().is_empty()) {
                 Some(d) => vec![d],
+                // Asked for everything, explicitly. Not the default: the tiers exist so
+                // one owner's facts do not surface in another's repo, and quietly
+                // widening that would undo the thing scoping is for.
+                None if all_scopes => g
+                    .prepare("SELECT DISTINCT dataset FROM memories WHERE superseded IS NULL")
+                    .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0))
+                        .and_then(|it| it.collect()))
+                    .unwrap_or_default(),
                 None => {
                     let parsed = origin.as_deref().and_then(paos_memory::scope::parse_origin);
                     // The CONFIGURED global, not the compiled-in default: a machine that

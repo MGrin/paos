@@ -21,7 +21,7 @@
 //! fact's distinctive vocabulary — the reported lexical overlap keeps that honest. A
 //! high overlap means the question leaked the answer's words and the case proves little.
 //!
-//! Usage: `rank-bench <paos.db> <golden.tsv> [--top-k N] [--sweep]`
+//! Usage: `rank-bench <paos.db> <golden.tsv> [--top-k N] [--sweep|--sweep-alias]`
 
 use paos_memory::{recall, Embedder, Model2VecEmbedder};
 use rusqlite::Connection;
@@ -146,6 +146,7 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(5usize);
     let sweep = args.iter().any(|a| a == "--sweep");
+    let sweep_alias = args.iter().any(|a| a == "--sweep-alias");
 
     let raw = match std::fs::read_to_string(positional[1]) {
         Ok(r) => r,
@@ -200,6 +201,18 @@ fn main() {
 
     let n = cases.len();
     println!("  {n} case(s), top-{top_k}, model {}", embedder.id());
+
+    if sweep_alias {
+        println!("\n  penalty  hit@1  hit@{top_k}    MRR");
+        for step in 0..=8 {
+            let w = step as f32 / 40.0;
+            std::env::set_var("PAOS_ALIAS_PENALTY", format!("{w}"));
+            let r = score(&conn, &embedder, &cases, top_k);
+            println!("  {w:>7.3}  {:>2}/{n}  {:>2}/{n}  {:>5.3}", r.hit1, r.hitk, r.mrr);
+        }
+        std::env::remove_var("PAOS_ALIAS_PENALTY");
+        return;
+    }
 
     if sweep {
         // The current default is included in the swept range, so the table shows whether a

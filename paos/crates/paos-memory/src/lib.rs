@@ -387,6 +387,10 @@ pub fn recall(
         // signal they were written to provide. A fact is reachable by what it SAYS or by
         // how someone would ASK for it, whichever fits better.
         let sim = match &alias_vec {
+            // No discount on the phrasing match. Discounting it was the obvious repair
+            // for the brains phrasings made worse, and it was swept from 0.000 to 0.200
+            // on the 70-question set: every value scored at or below plain max(). A knob
+            // that never wins is a knob that will be mis-tuned later.
             Some(a) => cosine(&q, &vec).max(cosine(&q, a)),
             None => cosine(&q, &vec),
         };

@@ -71,8 +71,18 @@ case "$(uname -s)" in
     ok "daemon installed and started"
     ;;
   *)
-    warn "no LaunchAgent on $(uname -s) — start the daemon yourself: $BIN/paosd &"
-    warn "  (and see SECURITY.md: the Keychain backend is macOS-only, Linux uses .env)"
+    # No LaunchAgent here, so start it ourselves rather than leaving the user with an
+    # installed-but-dead system and a note. It will not survive a reboot — wire up a
+    # systemd unit for that — but "installed" should mean "running".
+    mkdir -p "$HOME/.paos/server-logs"
+    if ! "$BIN/paos" ping >/dev/null 2>&1; then
+      nohup "$BIN/paosd" >"$HOME/.paos/server-logs/paosd.out.log" \
+                        2>"$HOME/.paos/server-logs/paosd.err.log" &
+      disown 2>/dev/null || true
+    fi
+    say "started paosd in the background (no service manager on $(uname -s);"
+    say "  add a systemd unit if you want it back after a reboot)"
+    say "  note: the Keychain secret backend is macOS-only — see SECURITY.md"
     ;;
 esac
 

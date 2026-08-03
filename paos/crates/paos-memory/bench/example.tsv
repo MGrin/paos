@@ -1,0 +1,18 @@
+# Example golden set for `rank-bench <paos.db> <this file>`.
+#
+# Columns, tab-separated: dataset, question, substring identifying the right fact.
+#
+# Write the question the way an agent would actually ask it, NOT the way the fact is
+# worded. A question built from the target's own vocabulary is answered by exact term
+# overlap alone, so it proves nothing about retrieval — rank-bench reports mean lexical
+# overlap so those cases are visible rather than flattering.
+#
+# Replace the dataset names with your own (`paos memory list` shows them) and the
+# questions with ones whose answers you know are in your store. Twenty to thirty cases is
+# enough to see a real regression; below about fifteen, one case is worth so many points
+# that noise reads as signal.
+
+global_memory	how do I reach my human when they are not at the keyboard	away
+global_memory	should I confirm receipt when a peer answers me	ack
+proj_example_app	where do commits for this repo go	main
+proj_example_app	my new file never showed up after deploying	ls-files

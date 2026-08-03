@@ -219,6 +219,30 @@ fn main() {
     }
 
     detail(&conn, &embedder, &cases, top_k);
+    // Per-brain, because the whole-set number hides the comparison that matters. A change
+    // applied to ONE dataset moves the total by a fraction of its real effect, and reads
+    // as noise next to the brains it never touched.
+    let mut brains: Vec<&str> = cases.iter().map(|c| c.dataset.as_str()).collect();
+    brains.sort_unstable();
+    brains.dedup();
+    if brains.len() > 1 {
+        println!("\n  ── by brain ─────────────────────────────");
+        for b in brains {
+            let subset: Vec<Case> = cases
+                .iter()
+                .filter(|c| c.dataset == b)
+                .map(|c| Case {
+                    dataset: c.dataset.clone(),
+                    question: c.question.clone(),
+                    needle: c.needle.clone(),
+                })
+                .collect();
+            let n = subset.len();
+            let r = score(&conn, &embedder, &subset, top_k);
+            println!("  {:<34} hit@1 {:>2}/{n}  hit@{top_k} {:>2}/{n}  MRR {:.3}",
+                     b, r.hit1, r.hitk, r.mrr);
+        }
+    }
     let r = score(&conn, &embedder, &cases, top_k);
     println!("\n  ── results ──────────────────────────────");
     println!("  hit@1  {:>2}/{n}", r.hit1);

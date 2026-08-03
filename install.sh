@@ -25,6 +25,21 @@ command -v cargo >/dev/null 2>&1 || {
   exit 1
 }
 
+# A C++ compiler, checked BEFORE the build rather than discovered by it.
+#
+# The tokenizer behind the embedding model builds a C++ dependency (esaxx-rs). On macOS
+# the Xcode command line tools provide one, so this is invisible to anyone who has ever
+# built anything — and on a clean Linux the build dies three minutes in, under a wall of
+# cc-rs environment-variable output that never says "install a compiler".
+if ! command -v c++ >/dev/null 2>&1 && ! command -v g++ >/dev/null 2>&1; then
+  echo "no C++ compiler found — the embedding tokenizer builds one native dependency." >&2
+  case "$(uname -s)" in
+    Darwin) echo "  xcode-select --install" >&2 ;;
+    *)      echo "  apt-get install build-essential   # or your distro's equivalent" >&2 ;;
+  esac
+  exit 1
+fi
+
 say "building (a few minutes the first time)…"
 ( cd "$SRC/paos" && cargo build --release )
 

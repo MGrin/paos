@@ -6,6 +6,10 @@
 cargo test          # the whole suite, offline: no network, no daemon
 ```
 
+You need a C++ compiler as well as Rust — the embedding tokenizer builds a native
+dependency (`esaxx-rs`). macOS has one once the Xcode command line tools are installed,
+which is why this went unnoticed until someone built in a clean container.
+
 If that does not pass on a clean checkout, that is a bug in this repository and worth an
 issue on its own.
 

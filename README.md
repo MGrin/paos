@@ -10,6 +10,10 @@ the core, and everything except the Telegram bridge works offline.
 
 ## Install
 
+Needs Rust and a C++ compiler — the embedding tokenizer builds one native dependency.
+On macOS `xcode-select --install`; on Debian/Ubuntu `apt-get install build-essential`.
+`install.sh` checks both before it starts building.
+
 ```sh
 git clone https://github.com/MGrin/paos.git && cd paos
 ./install.sh

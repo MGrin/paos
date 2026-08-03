@@ -22,7 +22,7 @@ const GOLDEN: &[(&str, &str, &str)] = &[
     ("proj_acme_dotfiles", "how do I reach my human when they are not at the keyboard", "away"),
     ("proj_acme_dotfiles", "what should I run at the end of a turn to stay contactable", "reachable"),
     ("proj_acme_dotfiles", "a peer stopped receiving my notes", "listener"),
-    ("proj_acme_dotfiles", "where do credentials live on this machine", "1password"),
+    ("proj_acme_dotfiles", "where do credentials live on this machine", "credentials"),
     ("proj_acme_dotfiles", "which command shows me who else is working right now", "who"),
     ("global_memory", "how should I talk to him on his phone", "short"),
     ("global_memory", "does he want me to check in before finishing", "autonom"),

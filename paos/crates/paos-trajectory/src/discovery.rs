@@ -193,7 +193,7 @@ fn title_and_lines(path: &Path) -> (Option<String>, usize) {
                         o.get("message").and_then(|m| m.get("content")).and_then(|v| v.as_str())
                     {
                         let s = c.trim();
-                        // Skip harness boilerplate (Conductor/system wrappers,
+                        // Skip harness boilerplate (workspace-manager and system wrappers,
                         // slash-command envelopes) — we want the human's prompt.
                         if !s.is_empty() && !s.starts_with('<') {
                             let collapsed =

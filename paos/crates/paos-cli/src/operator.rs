@@ -19,7 +19,7 @@ const POLL_SECS: u64 = 2;
 /// and the name the operator sees when answering "#3 [quiet-otter] ...".
 ///
 /// Resolved from the sessions table by CLAUDE_SESSION_ID, exactly as the Python did via
-/// `bus_facet.resolved_identity()`. Env-var guesses like CONDUCTOR_WORKSPACE_NAME are NOT
+/// `bus_facet.resolved_identity()`. Env-var guesses like PAOS_WORKSPACE are NOT
 /// the same string, and attributing an escalation to the wrong session means the answer
 /// is routed back to the wrong one.
 pub fn handle() -> String {
@@ -54,15 +54,18 @@ pub fn handle() -> String {
     "unbound-session".into()
 }
 
-/// `CONDUCTOR_WORKSPACE_NAME`, else the workspace path basename, else the cwd basename.
+/// `$PAOS_WORKSPACE`, else the cwd basename.
 ///
 /// Shared with `bus rename`, which persists the corrected identity under this key.
+///
+/// The env var is paos's own. It used to read the variables one particular workspace
+/// manager happens to export, which made a general tool carry a specific product's
+/// vocabulary — and told anyone else using paos nothing about how to set it. Any harness
+/// that wants to name a workspace exports PAOS_WORKSPACE; every other machine falls back
+/// to the directory it is standing in, which is what a person would guess.
 pub(crate) fn fs_key() -> String {
-    let raw = std::env::var("CONDUCTOR_WORKSPACE_NAME").ok()
+    let raw = std::env::var("PAOS_WORKSPACE").ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("CONDUCTOR_WORKSPACE_PATH").ok()
-            .map(|p| p.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string())
-            .filter(|s| !s.is_empty()))
         .or_else(|| std::env::current_dir().ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())))
         .unwrap_or_default();

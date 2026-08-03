@@ -26,7 +26,8 @@ nothing for the shell to re-parse:
 
 Single-quoting the printf argument (or the `<<'EOF'` heredoc marker) keeps the body literal.
 **Do NOT** write to `/tmp` and `cat` it back: `/tmp` is **not** sandbox-writable in the
-Conductor agent Bash, so the write fails, `$(cat …)` is empty, and you post a blank message.
+an agent's sandboxed Bash, so the write fails, `$(cat …)` is empty, and you post a blank
+message.
 If you truly need a file, use `$TMPDIR` (`printf %s '…' > "$TMPDIR/m"; paos bus send <room> - < "$TMPDIR/m"`).
 As a backstop, `paos bus send` now **refuses an empty/whitespace body** (exit 1) rather than
 posting blank — so a failed read fails loudly instead of silently reaching the peer as noise.

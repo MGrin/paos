@@ -275,15 +275,32 @@ mod tests {
         // cannot CONTAIN that string, and the first version failed on its own banned
         // list. Worse, the bulk substitution then "fixed" the LIST rather than the
         // fixtures — silently weakening the very test meant to prevent this.
+        // Two kinds of thing must not be in here. An IDENTITY — whose machine this
+        // was — and a VENDOR: the workspace manager, password manager and skill suite
+        // that one person happens to use. A general tool carrying a specific product's
+        // vocabulary is right for exactly one installation and tells everyone else
+        // nothing about how to make it work.
         let banned: Vec<String> = [("mr6", "r1n"), ("with", "flare"), ("scani", ".xyz"),
                                    ("mgrin", "_eth"), ("scaney", "_bot"),
-                                   ("mgrin", "_global_memory"), ("Flare", "XYZ")]
+                                   ("mgrin", "_global_memory"), ("Flare", "XYZ"),
+                                   ("Cond", "uctor"), ("cond", "uctor"),
+                                   ("super", "powers"), ("1Pass", "word")]
             .iter().map(|(a, b)| format!("{a}{b}")).collect();
 
+        // The crates AND the skill, which ships beside them. The skill lives at a
+        // different path in each layout, so both are tried and neither is required —
+        // this crate is also built alone.
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent().expect("crates/");
-        let mut checked = 0;
+        let root = crates.join("../..");
         let mut stack = vec![crates.to_path_buf()];
+        for skill in ["skill", "dotfiles/.claude/skills/paos"] {
+            let p = root.join(skill);
+            if p.is_dir() {
+                stack.push(p);
+            }
+        }
+        let mut checked = 0;
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
             for e in entries.flatten() {
@@ -293,7 +310,7 @@ mod tests {
                         continue;
                     }
                     stack.push(p);
-                } else if p.extension().is_some_and(|x| x == "rs") {
+                } else if p.extension().is_some_and(|x| x == "rs" || x == "md") {
                     let Ok(src) = std::fs::read_to_string(&p) else { continue };
                     checked += 1;
                     for b in &banned {

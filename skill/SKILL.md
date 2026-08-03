@@ -40,11 +40,11 @@ Memory is **scoped** across three tiers:
   cloud-platform gotchas). Keep this tier lean — it surfaces in *every* repo.
 - **org / owner-domain** — `org_<owner>_memory`, the owner of the cwd's git `origin`:
   facts that span **multiple repos of one owner** but aren't true everywhere (e.g.
-  cross-repo Flare contracts, org policies, shared infra → `org_flarexyz_memory`).
+  cross-repo contracts, org policies, shared infra → `org_<owner>_memory`).
   Auto-included in recall for any repo of that owner; invisible in other owners'
   repos — so work facts don't leak into personal-repo recall and vice versa.
 - **project** — `proj_<owner>_<repo>`, the exact repo: facts about one repo (its
-  branch rules, architecture, gotchas). Shared across every Conductor
+  branch rules, architecture, gotchas). Shared across every
   workspace/clone of that repo.
 
 Pick the **narrowest** tier that's still true: one repo → `--project`; spans an

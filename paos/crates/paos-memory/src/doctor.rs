@@ -321,9 +321,20 @@ fn stale_worktrees() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     let mut total = 0usize;
     let mut worst: Option<(String, usize)> = None;
-    // The roots this machine keeps repos in. Missing ones are skipped, so this is a
-    // no-op on a machine laid out differently rather than an error.
-    for root in ["Dev", "Projects", "conductor/workspaces"] {
+    // Where THIS machine keeps repositories, from `$PAOS_SCAN_ROOTS` — comma-separated,
+    // relative to $HOME. Empty means skip the check.
+    //
+    // It used to hardcode one person's three directories, one of which named the
+    // workspace manager they happen to use. That is a general tool carrying a specific
+    // machine's layout: right for exactly one installation, silently a no-op everywhere
+    // else, and telling nobody how to make it work for them.
+    let configured = std::env::var("PAOS_SCAN_ROOTS").unwrap_or_default();
+    let roots: Vec<&str> = configured.split(',').map(str::trim).filter(|r| !r.is_empty())
+        .collect();
+    if roots.is_empty() {
+        return None;
+    }
+    for root in roots {
         let base = std::path::Path::new(&home).join(root);
         let Ok(entries) = std::fs::read_dir(&base) else { continue };
         for e in entries.flatten() {

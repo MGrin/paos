@@ -940,7 +940,7 @@ pub fn run(all_args: &[String], args: &[String]) -> i32 {
                                      opt("--repo").map(String::as_str)));
             0
         }
-        // Corrects a MIS-DERIVED identity — e.g. Conductor renamed the worktree after the
+        // Corrects a MIS-DERIVED identity — e.g. a harness renamed the worktree after the
         // name was frozen at session start. Deliberately persistent, which is exactly what
         // `--as` is not. Not for impersonating another session.
         "rename" => {

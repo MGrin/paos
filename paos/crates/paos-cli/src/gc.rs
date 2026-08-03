@@ -35,14 +35,29 @@ const TARGETS: &[(&str, &str, &str, &str)] = &[
      "EXPENSIVE — model weights, a long re-download, and this machine works offline"),
 ];
 
-/// Build outputs under Conductor worktrees. Each Rust worktree carries its own ~1.9 GB
-/// target/ because CARGO_TARGET_DIR is unset — worth naming, since one env var collapses
-/// them all.
-const WORKTREE_GLOBS: &[(&str, &str, &str)] = &[
-    ("~/conductor/workspaces/*/*/paos/target", "cargo clean", "cheap"),
-    ("~/conductor/workspaces/*/*/node_modules", "rm -rf (reinstall to restore)", "cheap"),
-    ("~/conductor/workspaces/*/*/.next", "rm -rf", "cheap"),
+/// Build outputs under each repository root in `$PAOS_SCAN_ROOTS`.
+///
+/// Every Rust worktree carries its own ~1.9 GB target/ because CARGO_TARGET_DIR is unset
+/// — worth naming, since one env var collapses them all.
+///
+/// The roots are configuration rather than constants: this used to hardcode one person's
+/// workspace-manager directory, which found gigabytes on exactly one machine and silently
+/// nothing on every other.
+const WORKTREE_SUFFIXES: &[(&str, &str, &str)] = &[
+    ("*/*/target", "cargo clean", "cheap"),
+    ("*/*/node_modules", "rm -rf (reinstall to restore)", "cheap"),
+    ("*/*/.next", "rm -rf", "cheap"),
 ];
+
+/// `$PAOS_SCAN_ROOTS`, comma-separated and relative to $HOME. Empty means scan nothing.
+fn scan_roots() -> Vec<String> {
+    std::env::var("PAOS_SCAN_ROOTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .collect()
+}
 
 pub struct Item {
     pub label: String,
@@ -104,7 +119,13 @@ pub fn scan() -> Vec<Item> {
                               reclaim: (*how).into(), cost: (*cost).into() });
         }
     }
-    for (pattern, how, cost) in WORKTREE_GLOBS {
+    let patterns: Vec<(String, &str, &str)> = scan_roots()
+        .iter()
+        .flat_map(|root| WORKTREE_SUFFIXES.iter()
+            .map(move |(suffix, how, cost)| (format!("~/{root}/{suffix}"), *how, *cost)))
+        .collect();
+    for (pattern, how, cost) in &patterns {
+        let pattern = pattern.as_str();
         let matches = glob(&expand(pattern).to_string_lossy());
         let total: u64 = matches.iter().map(|m| du_bytes(m)).sum();
         if total > 0 {

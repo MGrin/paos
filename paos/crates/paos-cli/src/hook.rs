@@ -87,7 +87,7 @@ fn session_presence(ppid: &str) -> i32 {
 
     // PREFER CLAUDE_CODE_SESSION_ID: it is rename-immune and is the same id the CLI later
     // resolves from, so the handle is bound under the identical sid it will be looked up
-    // by. A Conductor worktree rename mid-session changes the path-derived key but not
+    // by. A worktree rename mid-session changes the path-derived key but not
     // this.
     let sid = std::env::var("CLAUDE_CODE_SESSION_ID").ok()
         .filter(|s| !s.is_empty())

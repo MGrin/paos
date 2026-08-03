@@ -41,6 +41,23 @@ const SYSTEM: &str = concat!(
 ///
 /// This machine keeps its own answer through `identity_work_owners`, written before the
 /// default changed. The env var stays because a container has no dashboard to set it in.
+/// The repository this note belongs to — asked of git, not of an env var.
+///
+/// It used to read one workspace manager's variable, so a note logged anywhere else had
+/// no repo at all and every side-detection fell back to personal. git knows, on every
+/// machine, without anyone exporting anything.
+fn repo_root() -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if p.is_empty() { None } else { Some(p) }
+}
+
 fn work_owners() -> Vec<String> {
     let configured = ro().and_then(|c| {
         c.query_row("SELECT value FROM paos_config WHERE key='identity_work_owners'",
@@ -340,7 +357,7 @@ fn cmd_log(text: &str, send: &impl Fn(&Request) -> Option<Response>) -> i32 {
         eprintln!("standup log needs some text");
         return 2;
     }
-    let root = std::env::var("CONDUCTOR_ROOT_PATH").ok();
+    let root = repo_root();
     let side = side_for_repo(root.as_deref());
     let data = serde_json::json!({ "side": side, "repo": repo_slug(root.as_deref()) });
     match send(&Request::Event {

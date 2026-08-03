@@ -76,6 +76,21 @@ options:
 /// infrastructure problem from a command that ran and said no.
 const EXIT_NO_DAEMON: i32 = 69;
 
+/// Facet flags that take a VALUE. Their value must not be mistaken for a positional.
+///
+/// Kept as one list because the alternative — teaching this parser every facet's whole
+/// grammar — is how it ends up disagreeing with the facets it dispatches to. The test
+/// below derives this from the facets' own `value(args, "--x")` calls, so a new
+/// value-taking flag cannot be added without landing here too.
+const TAKES_A_VALUE: [&str; 17] = [
+    "--body", "--cursor", "--dataset", "--dep", "--dest", "--file", "--kind", "--limit",
+    "--min-chars", "--min-sessions", "--parent", "--priority", "--room", "--session",
+    "--since", "--supersede",
+    // Already consumed by an arm above; listed so the drift test can be exhaustive
+    // rather than have an exception nobody remembers the reason for.
+    "--top-k",
+];
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // CLAUDE_CODE_SESSION_ID — via the one helper that knows. This read CLAUDE_SESSION_ID,
@@ -90,6 +105,8 @@ fn main() {
     let mut tier: Option<String> = None;
     let mut urgent_only = false;
     let mut top_k: usize = 8;
+
+
     let mut positional: Vec<String> = Vec::new();
     let mut unknown_flags: Vec<String> = Vec::new();
     let mut ppid: Option<i64> = None;
@@ -138,6 +155,27 @@ fn main() {
             // own flags (`bus log --tail`, `bus rooms --all`), and rejecting those broke
             // them the moment this check was added. So collect now, judge once `cmd` is
             // known. Bare "-" is left alone: it means "read the body from stdin".
+            // A FACET FLAG THAT TAKES A VALUE MUST NOT LEAK ITS VALUE INTO positional.
+            //
+            // `memory remember --global --supersede <id> "<text>"` stored the ID as the
+            // fact and threw the text away — while reporting success and retiring the old
+            // fact. So the old fact was lost, the new one never written, and a 32-character
+            // hex string sat in the store where a correction should have been. Measured on
+            // the live store 2026-08-03; the junk row is still there to look at.
+            //
+            // The mechanism: `--supersede` is unknown here, so it went to unknown_flags,
+            // and its value does not start with `-`, so it became positional[2] — which is
+            // exactly where `remember` reads its text from. The facet ALSO found the value
+            // by scanning raw argv, so the supersede half worked. Half-working is what made
+            // it silent.
+            //
+            // Deliberately a LIST rather than "any flag consumes the next token": the
+            // boolean flags here are frequently followed by the positional, and
+            // `remember --global "text"` would then eat the fact.
+            other if TAKES_A_VALUE.contains(&other) => {
+                unknown_flags.push(other.to_string());
+                i += 1;   // its value belongs to the flag, not to the command
+            }
             other if other.starts_with('-') && other != "-" => {
                 unknown_flags.push(other.to_string());
             }
@@ -933,6 +971,50 @@ mod tests {
         assert!(!arm.contains("Request::Listen"),
                 "the flat `listen` must NOT open the socket — that is what made it \
                  exit 69 for every sandboxed session");
+    }
+
+    /// The bug this whole list exists for, as a test.
+    #[test]
+    fn a_flag_value_never_becomes_the_command_s_positional() {
+        // `memory remember --global --supersede <id> "<text>"` stored the ID as the fact
+        // and dropped the text — while reporting success and retiring the old fact. Both
+        // halves of a supersede lost: the old one gone, the new one never written.
+        let argv = ["memory", "remember", "--global", "--supersede", "abc123", "the real fact"];
+        let mut positional: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < argv.len() {
+            let a = argv[i];
+            if TAKES_A_VALUE.contains(&a) {
+                i += 2;
+                continue;
+            }
+            if a.starts_with('-') {
+                i += 1;
+                continue;
+            }
+            positional.push(a.to_string());
+            i += 1;
+        }
+        assert_eq!(positional, vec!["memory", "remember", "the real fact"],
+                   "the id must belong to --supersede, not to remember");
+    }
+
+    /// The list must not drift from the facets that read these flags. A value-taking flag
+    /// added to a facet and forgotten here silently eats the next argument again.
+    #[test]
+    fn every_value_taking_flag_the_facets_read_is_declared_here() {
+        let sources = [
+            include_str!("memory.rs"), include_str!("librarian.rs"),
+            include_str!("task.rs"), include_str!("bus.rs"),
+        ];
+        for src in sources {
+            for (i, _) in src.match_indices("value(args, \"--") {
+                let rest = &src[i + "value(args, \"".len()..];
+                let flag: String = rest.chars().take_while(|c| *c != '"').collect();
+                assert!(TAKES_A_VALUE.contains(&flag.as_str()),
+                        "{flag} takes a value in a facet but is missing from TAKES_A_VALUE");
+            }
+        }
     }
 
     #[test]

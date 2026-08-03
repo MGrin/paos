@@ -1,0 +1,32 @@
+name: It would not install or start
+description: The first five minutes did not work
+labels: [install]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are the most useful issues right now. paos has run on very few machines, so
+        an install that fails on yours is telling us something we cannot find ourselves.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: Where it stopped
+      description: The last few lines before it gave up, not the whole build log.
+      render: text
+    validations: { required: true }
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15.2 arm64 / Ubuntu 24.04 x86_64 / Debian in Docker
+    validations: { required: true }
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: Prerequisites
+      options:
+        - label: "`cargo --version` works"
+        - label: "`c++ --version` or `g++ --version` works"

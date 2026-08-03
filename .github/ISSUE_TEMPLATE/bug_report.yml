@@ -1,0 +1,57 @@
+name: Bug report
+description: Something behaves differently from what it says it does
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before anything else: is the daemon running? `paos ping` should print `pong`.
+        `paos` is a thin client, so a dead daemon makes every command fail in a way that
+        looks like a bug in the command.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected instead
+      placeholder: |
+        I ran `paos memory recall "deploy"` and got no results.
+        I expected the fact I stored a minute earlier.
+    validations: { required: true }
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `paos doctor`
+      description: >
+        It answers "is any of this quietly broken?" in one command — whether the store is
+        being written, whether the daemon is up, when the nightly pass last ran. Redact
+        anything you would rather not publish.
+      render: text
+    validations: { required: true }
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15.2 arm64 / Ubuntu 24.04 x86_64
+    validations: { required: true }
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - ./install.sh
+        - built and installed by hand
+        - a release binary
+    validations: { required: true }
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant lines from ~/.paos/server-logs/paosd.err.log
+      description: >
+        Only if the daemon is involved. The most useful lines are usually the first ten
+        after a restart — they say which embedder loaded and whether the Telegram bridge
+        came up.
+      render: text

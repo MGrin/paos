@@ -174,7 +174,16 @@
 // sessions, so the safe primitive is the only primitive.
 const app = document.getElementById('app');
 const statusEl = document.getElementById('status');
-let view = 'home';
+const VIEWS = ['home', 'memory', 'tasks', 'sessions', 'standup', 'accounts', 'settings'];
+function viewFromUrl() {
+  const v = new URLSearchParams((location.hash || '').replace(/^#/, '')).get('view');
+  return VIEWS.includes(v) ? v : 'home';
+}
+function markCurrent(v) {
+  document.querySelectorAll('nav button').forEach(b =>
+    b.setAttribute('aria-current', String(b.dataset.view === v)));
+}
+let view = viewFromUrl();
 const state = { brain: null, q: '', room: null, side: null,
                 memTab: 'facts', sessTab: 'fleet' };
 
@@ -704,8 +713,10 @@ const views = {
       let input;
       const src = (sources || {})[sp.key];
       if (src === 'env') {
-        // Supplied by the .env the daemon reads. Showing an editable box here would
-        // offer a knob that changes nothing, since the file wins on the next restart.
+        // Supplied by the .env the daemon reads. An editable box here offers a knob that
+        // changes nothing — the file wins on the next restart — and an EMPTY one also
+        // reads as "not configured", which is the same lie the status line was telling
+        // before. So: say where it lives, and disable the control.
         left.append(el('div', 'fix', 'set in ~/.paos/.env — edit the file, not this page'));
       }
       if (sp.type === 'secret') {
@@ -740,6 +751,11 @@ const views = {
         try { await post('/api/config', { key: sp.key, value: v }); toast(sp.key + ' = ' + v); }
         catch (e) { toast(String(e.message || e)); }
       };
+      if (src === 'env') {
+        input.disabled = true;
+        input.placeholder = 'from ~/.paos/.env';
+        input.title = 'This value comes from the file; editing here would not survive a restart.';
+      }
       // Commit on change/blur, not per keystroke — every save is a subprocess.
       input.onchange = save;
       wrap.append(left, input);
@@ -830,12 +846,40 @@ function go(v) {
   // or a hidden tab keeps fetching and Escape still closes a panel nobody can see.
   if (view === 'tasks' && v !== 'tasks' && window.TasksView) TasksView.hide();
   view = v;
-  document.querySelectorAll('nav button').forEach(b =>
-    b.setAttribute('aria-current', String(b.dataset.view === v)));
+  markCurrent(v);
   app.replaceChildren();
+  // The URL is the view. Without this a reload always dumped you back on the dashboard,
+  // no view could be bookmarked or sent to anyone, and the back button did nothing —
+  // in a tool whose whole job is telling you where things stand.
+  // `#view=<name>`, the convention the tasks board already established for its filters
+  // ("a filtered board is a link you can send yourself"). Adopting it rather than
+  // inventing a second one, because two URL formats in one page is how the back button
+  // starts doing something different depending on where you came from.
+  if (viewFromUrl() !== v) {
+    const p = new URLSearchParams({ view: v });
+    history.pushState({ v }, '', '#' + p.toString());
+  }
   render();
 }
 document.querySelectorAll('nav button').forEach(b => { b.onclick = () => go(b.dataset.view); });
+// The highlight is hardcoded to `dashboard` in the markup and was only ever corrected by
+// go(). Opening a deep link therefore rendered the right view under the wrong sidebar
+// entry — the one case where the nav actively lies about where you are.
+markCurrent(view);
+
+
+// Back, forward, and an edited URL all go through go() — the ONE path that changes a
+// view. The first version duplicated go()'s body here and skipped its teardown, so
+// navigating away from the board by URL left the board's poll timer running and its DOM
+// in place: the sidebar said settings, the tasks board was still on screen.
+function goFromUrl() {
+  const v = viewFromUrl();
+  if (v !== view) go(v);
+}
+addEventListener('popstate', goFromUrl);
+// hashchange as well: editing the fragment in the address bar does not always raise
+// popstate, and a URL you can type is the whole point of having one.
+addEventListener('hashchange', goFromUrl);
 
 async function render() {
   try {

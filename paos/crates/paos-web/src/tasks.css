@@ -23,11 +23,17 @@
 /* Five columns, each scrolling on its own so a long Done column cannot push Ready off
    the screen. Horizontal scroll below ~1000px rather than reflow: a kanban board that
    stacks into one column has stopped being a kanban board. */
-.board { display: grid; grid-template-columns: repeat(5, minmax(210px, 1fr)); gap: 12px; }
-@media (max-width: 1000px) {
-  .board { display: flex; overflow-x: auto; padding-bottom: 8px; }
-  .board .col { min-width: 240px; flex: none; }
-}
+/* One layout at every width, because the breakpoint was wrong in the middle.
+ *
+ * The grid only scrolled below 1000px. Between there and ~1150px it stayed a five-column
+ * grid whose minimum (5x210 + gaps = 1098px) exceeded the content area — and a grid does
+ * not scroll, it clips. On a 1280px window the DONE column was cut off with no way to
+ * reach it, which is the worst version: the board looked complete.
+ *
+ * Flex with a basis grows the columns on a wide screen and holds their minimum on a
+ * narrow one, so the board scrolls instead of hiding work. */
+.board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+.board .col { flex: 1 1 210px; min-width: 210px; }
 
 .col { display: flex; flex-direction: column; min-height: 120px; }
 .col > h3 {

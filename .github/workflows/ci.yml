@@ -44,6 +44,36 @@ jobs:
               || { echo "$b is not ad-hoc signed"; exit 1; }
           done
 
+  linux:
+    # Not a second opinion on the tests — the macOS job above is the authoritative run.
+    # This exists because the release now ships a Linux binary, and without it the FIRST
+    # place Linux breakage appears is a tag push, where it fails the release rather than
+    # a pull request. paos did not link on Linux at all for the whole of its history
+    # (`__error` is macOS-only; glibc wants `__errno_location`) and nothing here noticed;
+    # it was found by hand in a container.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: paos
+
+      - name: Test
+        working-directory: paos
+        run: cargo test --workspace --locked
+
+      - name: Build
+        working-directory: paos
+        run: cargo build --release --locked
+
+      - name: The binaries must actually run
+        working-directory: paos
+        run: ./target/release/paos --help >/dev/null
+
   dispatcher:
     runs-on: macos-14
     steps:

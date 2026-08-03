@@ -70,7 +70,9 @@ useful ones right now.
 ## Honest limits
 
 - **macOS first.** The Keychain backend, the LaunchAgent and the Übersicht widget are Mac.
-  Linux works through the `.env` secret backend; nobody has run it there in anger.
+  Linux builds and tests in CI and ships a release binary, and secrets there go through
+  the `.env` backend — but nobody has run it on Linux in anger, and the daemon has no
+  systemd unit, so you start it yourself.
 - **Shaped for Claude Code.** The session lifecycle hooks assume it.
 - **One operator per bot.** The Telegram bridge authorises a single user id by design.
 - **You bring your own bot.** Create one with @BotFather; `paos init` prints the steps.

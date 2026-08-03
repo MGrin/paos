@@ -90,7 +90,113 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS idx_memories_dataset
            ON memories(dataset, created_ts);
          CREATE TABLE IF NOT EXISTS memory_meta (key TEXT PRIMARY KEY, value TEXT);",
-    )
+    )?;
+    // Usage, added 2026-08-03 so ranking can tell a fact that EARNS its place from one
+    // that merely matches. Until now the table said nothing about whether a fact had ever
+    // been useful, so a note recalled weekly and one never returned since the day it was
+    // written ranked identically.
+    //
+    // Added here rather than in the store's migration ladder because this table is not
+    // the store's — `memories` is created by this function, and a ladder entry for it
+    // fails on a database that has never held a memory.
+    //
+    // The errors are swallowed on purpose: `ALTER TABLE ADD COLUMN` fails once the column
+    // exists, and this runs on every start. Nothing else here can tell the two apart, and
+    // a start that dies because a column is already present would be a worse bug than the
+    // one being guarded against.
+    let _ = conn.execute("ALTER TABLE memories ADD COLUMN last_used TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE memories ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0", []);
+    Ok(())
+}
+
+/// How long it takes an untouched fact to lose half its ranking bonus.
+///
+/// Ninety days is deliberately long. These are curated durable facts, not chat turns —
+/// the store holds decisions and gotchas that stay true for months, and a half-life tuned
+/// for conversation would bury them while they were still correct.
+pub const HALF_LIFE_DAYS: f64 = 90.0;
+
+/// The floor a decayed fact cannot fall below.
+///
+/// Decay REORDERS, it never hides. An old fact ranked last is still findable; an old fact
+/// multiplied towards zero is deleted without anyone deciding to delete it, and in a
+/// human-curated store that is not forgetting, it is data loss with extra steps.
+pub const DECAY_FLOOR: f64 = 0.6;
+
+/// Ranking weight from usefulness: rewarded for being used, decayed for not being.
+///
+/// `age_days` is measured from the last USE, or from creation if it has never been used —
+/// so a fact written an hour ago starts at full weight rather than being punished for
+/// having no history. The newest facts are usually the ones that just cost someone an
+/// afternoon.
+/// Days since the unix epoch, now.
+fn now_epoch_days() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64() / 86_400.0)
+        .unwrap_or(0.0)
+}
+
+/// Days since the epoch for an ISO timestamp. An unparseable one reads as NOW, so a
+/// malformed row is ranked as fresh rather than as maximally stale — a parsing bug must
+/// not quietly demote real facts.
+fn epoch_days(iso: &str) -> f64 {
+    parse_iso_days(iso).unwrap_or_else(now_epoch_days)
+}
+
+fn parse_iso_days(s: &str) -> Option<f64> {
+    let b = s.as_bytes();
+    if b.len() < 10 {
+        return None;
+    }
+    let num = |a: usize, z: usize| -> Option<i64> { s.get(a..z)?.parse().ok() };
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // days_from_civil (Howard Hinnant), same as the operator crate's parser.
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) as f64)
+}
+
+fn now_iso_ts() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // civil_from_days, the inverse of the above.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
+}
+
+/// The most usefulness can add. Similarity still decides; this only breaks ties.
+///
+/// Uncapped, a fact used 200 times scored 3.6x — enough to beat a far better match on a
+/// query it only half fits, which turns "has been useful before" into "is the answer to
+/// everything". The test that caught it is the one asserting it cannot swamp similarity.
+pub const MAX_USE_BONUS: f64 = 0.75;
+
+pub fn usefulness(use_count: i64, age_days: f64) -> f64 {
+    let used = 1.0 + ((1.0 + use_count.max(0) as f64).ln() * 0.5).min(MAX_USE_BONUS);
+    let decay = 0.5_f64.powf(age_days.max(0.0) / HALF_LIFE_DAYS);
+    used * (DECAY_FLOOR + (1.0 - DECAY_FLOOR) * decay)
 }
 
 /// Store a fact. **Works offline** — that is the point.
@@ -198,7 +304,8 @@ pub fn recall(
     let q = embedder.embed(query);
     let placeholders = vec!["?"; datasets.len()].join(",");
     let sql = format!(
-        "SELECT id, dataset, text, embedding, created_ts FROM memories \
+        "SELECT id, dataset, text, embedding, created_ts, \
+                COALESCE(last_used, created_ts), COALESCE(use_count, 0) FROM memories \
          WHERE superseded IS NULL AND dataset IN ({placeholders})"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -213,13 +320,20 @@ pub fn recall(
                 created_ts: r.get(4)?,
             },
             decode(&r.get::<_, Vec<u8>>(3)?),
+            r.get::<_, String>(5)?,
+            r.get::<_, i64>(6)?,
         ))
     })?;
 
+    let now = now_epoch_days();
     let mut hits: Vec<Hit> = Vec::new();
     for row in rows {
-        let (memory, vec) = row?;
-        hits.push(Hit { score: cosine(&q, &vec), memory });
+        let (memory, vec, touched, uses) = row?;
+        // Similarity says a fact MATCHES; usefulness says it has earned being read. A
+        // fact recalled weekly and one never returned since the day it was written used
+        // to rank identically, and only similarity decided between them.
+        let age = (now - epoch_days(&touched)).max(0.0);
+        hits.push(Hit { score: cosine(&q, &vec) * usefulness(uses, age) as f32, memory });
     }
     // HYBRID RERANK. Dense similarity finds the right neighbourhood but orders within it
     // poorly: measured on this store, 12 of 35 semantic queries put the correct fact at
@@ -242,7 +356,25 @@ pub fn recall(
     let mut seen = std::collections::HashSet::new();
     hits.retain(|h| seen.insert(normalise(&h.memory.text)));
     hits.truncate(top_k);
+    // REINFORCEMENT. Being pulled into a session's context is the only evidence a fact is
+    // worth keeping, and it was being thrown away. Best-effort on purpose: a recall that
+    // failed because its own bookkeeping failed would be a strictly worse trade.
+    let touched: Vec<&str> = hits.iter().map(|h| h.memory.id.as_str()).collect();
+    let _ = reinforce(conn, &touched);
     Ok(hits)
+}
+
+/// Record that these facts were just used.
+pub fn reinforce(conn: &Connection, ids: &[&str]) -> rusqlite::Result<()> {
+    let now = now_iso_ts();
+    for id in ids {
+        conn.execute(
+            "UPDATE memories SET use_count = COALESCE(use_count,0) + 1, last_used = ?1 \
+             WHERE id = ?2",
+            rusqlite::params![now, id],
+        )?;
+    }
+    Ok(())
 }
 
 fn normalise(s: &str) -> String {
@@ -300,6 +432,60 @@ fn decode(b: &[u8]) -> Vec<f32> {
     b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+#[cfg(test)]
+mod usefulness_tests {
+    use super::*;
+
+    #[test]
+    fn a_fact_written_today_is_not_penalised_for_having_no_history() {
+        // The reverse would be exactly backwards: the newest facts are usually the ones
+        // that just cost someone an afternoon.
+        assert!(usefulness(0, 0.0) >= 1.0);
+    }
+
+    #[test]
+    fn being_used_raises_the_weight_and_never_runs_away() {
+        let never = usefulness(0, 0.0);
+        let often = usefulness(20, 0.0);
+        assert!(often > never, "use has to count for something");
+        // Logarithmic on purpose: a fact read 200 times is not 200 times more relevant,
+        // and linear growth would let one popular fact win every query it half-matches.
+        assert!(usefulness(200, 0.0) < never * 3.0, "and it must not swamp similarity");
+    }
+
+    #[test]
+    fn disuse_decays_but_never_towards_zero() {
+        let fresh = usefulness(0, 0.0);
+        let old = usefulness(0, 365.0);
+        assert!(old < fresh, "an untouched fact should sink");
+        // DECAY REORDERS, IT DOES NOT HIDE. Multiplying an old fact towards zero deletes
+        // it without anyone deciding to — data loss with extra steps, in a store whose
+        // whole premise is that a human curates it.
+        assert!(old > fresh * DECAY_FLOOR * 0.99, "and never become unfindable");
+    }
+
+    #[test]
+    fn a_used_old_fact_still_beats_an_unused_old_one() {
+        assert!(usefulness(10, 200.0) > usefulness(0, 200.0));
+    }
+
+    #[test]
+    fn an_unparseable_timestamp_reads_as_fresh_rather_than_ancient() {
+        // A parsing bug must not quietly demote real facts to the bottom of every query.
+        let now = now_epoch_days();
+        assert!((epoch_days("not a date") - now).abs() < 1.0);
+    }
+
+    #[test]
+    fn the_iso_written_back_is_the_iso_that_parses() {
+        // reinforce() writes this and recall reads it. If the two disagree, every
+        // reinforced fact silently reads as ancient — the opposite of the intent.
+        let s = now_iso_ts();
+        assert!(parse_iso_days(&s).is_some(), "wrote an unparseable timestamp: {s}");
+        assert!((epoch_days(&s) - now_epoch_days()).abs() < 1.0, "{s}");
+    }
 }
 
 #[cfg(test)]

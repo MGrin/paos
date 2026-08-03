@@ -18,9 +18,9 @@ if [ ! -x "$paosctl" ]; then
   # binary is missing, and "command not found" would send it looking in the wrong place.
   echo "paos: paosctl is not installed at $paosctl" >&2
   echo "  build and install it:" >&2
-  echo "    cd <dotfiles>/paos && cargo build --release \\" >&2
+  echo "    cd <paos>/paos && cargo build --release \\" >&2
   echo "      && install -m 755 target/release/paos ~/.local/bin/paosctl" >&2
-  echo "  (setup phase 80 does this on a fresh machine)" >&2
+  echo "  or run \`paos init\` after cloning https://github.com/MGrin/paos" >&2
   exit 127
 fi
 exec "$paosctl" "$@"

@@ -642,37 +642,10 @@ mod switch_decision_tests {
         assert_eq!(decide_switch(&a, &cfg(), 0, 10_000).0, None);
     }
 
-    #[test]
-    fn the_defaults_are_derived_from_the_python_not_remembered() {
-        // DERIVE THE CHECK FROM BOTH SOURCES. These defaults carried a comment saying
-        // they matched the Python's DEFAULT_CONFIG while COOLDOWN was 900 against the
-        // Python's 120, and nothing noticed — the verdict harness passes one config to
-        // both sides, so it compares the algorithm and never the defaults.
-        let py = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../dotfiles/.local/bin/claude_accounts.py");
-        let Ok(src) = std::fs::read_to_string(&py) else {
-            // Expected once the Python is deleted: the Rust becomes the sole definition
-            // and there is nothing left to derive from.
-            eprintln!("SKIP: {} is gone — Rust is now the only source", py.display());
-            return;
-        };
-        let start = src.find("DEFAULT_CONFIG = {").expect("DEFAULT_CONFIG moved or was renamed");
-        let end = src[start..].find('}').expect("unterminated DEFAULT_CONFIG") + start;
-        let body = &src[start..end];
-        let val = |key: &str| -> f64 {
-            let at = body.find(&format!("\"{key}\":")).unwrap_or_else(|| panic!("{key} missing"));
-            body[at + key.len() + 3..]
-                .trim_start()
-                .split(|c: char| !c.is_ascii_digit() && c != '.')
-                .next().unwrap()
-                .parse().unwrap_or_else(|e| panic!("{key}: {e}"))
-        };
-        let d = SwitchConfig::default();
-        assert_eq!(d.switch_at, val("SWITCH_AT"));
-        assert_eq!(d.weekly_switch_at, val("WEEKLY_SWITCH_AT"));
-        assert_eq!(d.target_max, val("TARGET_MAX"));
-        assert_eq!(d.cooldown as f64, val("COOLDOWN"), "COOLDOWN drifted from the Python");
-    }
+    // A parity test against `claude_accounts.py` used to live here. It read the Python
+    // by relative path and skipped when absent — which, now that paos is its own
+    // repository, is ALWAYS. A test that can only skip is not coverage, it is a comment
+    // that costs a compile. The parity check lives where the Python does.
 
     #[test]
     fn a_config_file_overrides_the_defaults_and_a_typo_does_not() {

@@ -35,6 +35,37 @@ pub struct Daemon {
     pub broadcast_wakes: bool,
     /// Loaded once at startup: the 123 MB model must not be re-read per request.
     pub embedder: Arc<dyn paos_memory::Embedder>,
+    /// The second-stage judge, when its model is present.
+    ///
+    /// OPTIONAL on purpose. It is a separate 133 MB download, so a fresh install, an
+    /// offline machine and anyone who declines it must all still get working recall —
+    /// just the single-stage recall they had before.
+    pub reranker: Option<Arc<dyn paos_memory::Embedder>>,
+}
+
+/// The second-stage model, if it has been downloaded.
+///
+/// Never fatal: every failure here means single-stage recall, which is what paos did
+/// yesterday. A daemon that refuses to start because an optional model is missing would
+/// turn an optional feature into a required one.
+#[cfg(feature = "bert")]
+fn load_reranker() -> Option<Arc<dyn paos_memory::Embedder>> {
+    let dir = paos_memory::BertEmbedder::default_dir();
+    if !dir.join("model.safetensors").exists() {
+        return None;
+    }
+    match paos_memory::BertEmbedder::from_dir(&dir) {
+        Ok(b) => Some(Arc::from(Box::new(b) as Box<dyn paos_memory::Embedder>)),
+        Err(e) => {
+            eprintln!("paosd: reranker unavailable ({e})");
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "bert"))]
+fn load_reranker() -> Option<Arc<dyn paos_memory::Embedder>> {
+    None
 }
 
 fn main() {
@@ -54,6 +85,13 @@ fn run() -> io::Result<()> {
     // could connect to a daemon that was already dying.
     let embedder: Arc<dyn paos_memory::Embedder> = Arc::from(paos_memory::best_available());
     eprintln!("paosd: embedder {} ({} dims)", embedder.id(), embedder.dimensions());
+    let reranker = load_reranker();
+    match &reranker {
+        Some(r) => eprintln!("paosd: reranker {} ({} dims)", r.id(), r.dimensions()),
+        // Said out loud rather than left silent: a missing second stage is a supported
+        // state, but one nobody should discover by wondering why recall did not improve.
+        None => eprintln!("paosd: no reranker — recall is single-stage"),
+    }
     {
         let g = conn.lock().unwrap_or_else(|p| p.into_inner());
         paos_memory::ensure_schema(&g).map_err(io::Error::other)?;
@@ -144,6 +182,7 @@ fn run() -> io::Result<()> {
         push: Registry::new(),
         broadcast_wakes,
         embedder: Arc::clone(&embedder),
+        reranker: reranker.clone(),
     });
 
     for stream in listener.incoming() {

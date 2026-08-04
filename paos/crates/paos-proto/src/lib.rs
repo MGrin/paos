@@ -100,6 +100,10 @@ pub enum Request {
         all_scopes: bool,
 },
     Forget { id: String },
+    /// Compute second-stage vectors for facts that have none. Resumable by design: it
+    /// indexes at most `limit` per call, so a 1,600-fact store is caught up in batches
+    /// rather than holding the single writer for minutes.
+    RerankIndex { limit: usize },
     /// Attach alternate phrasings to a fact and re-embed it; `None` removes them.
     ///
     /// A write, so it belongs to the daemon like every other: the phrasings change the

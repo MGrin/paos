@@ -133,7 +133,15 @@ pub fn dispatch(daemon: &Daemon, req: Request) -> Response {
                 Err(r) => return r,
             };
             match paos_memory::remember(&g, daemon.embedder.as_ref(), &dataset, text.trim(), &now_iso()) {
-                Ok(id) => Response::ok(format!("stored in {dataset} ({id})")),
+                Ok(id) => {
+                    // Index it NOW, while the daemon already holds the lock and the model.
+                    // A fact indexed only by a later batch would be invisible to the
+                    // second stage in exactly the window it is most likely to be recalled.
+                    if let Some(r) = daemon.reranker.as_deref() {
+                        let _ = paos_memory::set_rerank_vector(&g, r, &id);
+                    }
+                    Response::ok(format!("stored in {dataset} ({id})"))
+                }
                 Err(e) => Response::err(format!("remember failed: {e}"), 1),
             }
         }
@@ -162,7 +170,8 @@ pub fn dispatch(daemon: &Daemon, req: Request) -> Response {
                         parsed.as_ref(), &paos_memory::scope::global_dataset(&g))
                 }
             };
-            match paos_memory::recall(&g, daemon.embedder.as_ref(), &scopes, &query, top_k) {
+            match paos_memory::recall_reranked(&g, daemon.embedder.as_ref(),
+                                              daemon.reranker.as_deref(), &scopes, &query, top_k) {
                 Ok(hits) if hits.is_empty() => Response::ok("(no results)"),
                 Ok(hits) => Response::Ok {
                     lines: hits.iter().map(|h| format!(
@@ -517,6 +526,33 @@ pub fn dispatch(daemon: &Daemon, req: Request) -> Response {
                 Err(e) => Response::err(format!("forget failed: {e}"), 1),
             }
         }
+        Request::RerankIndex { limit } => {
+            let Some(r) = daemon.reranker.as_deref() else {
+                return Response::err(
+                    "no reranker model — run `paos init` and accept the reranker, or fetch \
+                     BAAI/bge-small-en-v1.5 into ~/.cache/paos/models/bge-small-en-v1.5",
+                    3,
+                );
+            };
+            let g = lock(daemon);
+            let ids: Vec<String> = g
+                .prepare("SELECT id FROM memories WHERE rerank_embedding IS NULL LIMIT ?1")
+                .and_then(|mut st| {
+                    st.query_map([limit as i64], |row| row.get(0)).and_then(|it| it.collect())
+                })
+                .unwrap_or_default();
+            let mut done = 0usize;
+            for id in &ids {
+                if paos_memory::set_rerank_vector(&g, r, id).unwrap_or(false) {
+                    done += 1;
+                }
+            }
+            let left: i64 = g
+                .query_row("SELECT COUNT(*) FROM memories WHERE rerank_embedding IS NULL", [],
+                           |row| row.get(0))
+                .unwrap_or(0);
+            Response::ok(format!("indexed {done}, {left} still unindexed"))
+        }
         Request::SetAliases { id, aliases } => {
             let g = lock(daemon);
             match paos_memory::set_aliases(&g, daemon.embedder.as_ref(), &id, aliases.as_deref()) {
@@ -848,6 +884,10 @@ mod tests {
             // Tests use the deterministic lexical backend: loading a 123 MB model per
             // test would be slow, and none of these assertions are about embedding.
             embedder: std::sync::Arc::new(paos_memory::HashEmbedder::new(64)),
+            // No second stage in tests, which is also the shipped default state on a
+            // machine that has not downloaded the optional model — so these assertions
+            // cover the degraded path every install starts in.
+            reranker: None,
         }
     }
 

@@ -28,8 +28,9 @@ The daemon matters more than it looks: `paos` is a thin client, so without one r
 every command fails with "cannot reach paosd" — and nothing would tell you the daemon had
 simply never been started.
 
-`paos init` then creates the store, downloads the embedding model (129 MB, once), and — if
-you want it — configures Telegram. It asks for a bot token and learns your chat and user
+`paos init` then creates the store, downloads the embedding model (129 MB, once), offers
+the optional reranker (another 133 MB — recall measurably improves, and everything works
+without it), and — if you want it — configures Telegram. It asks for a bot token and learns your chat and user
 id from your first message to the bot, so you never have to find a numeric Telegram id.
 
 Telegram is optional. Memory, the bus and the dashboard all work without it.
@@ -88,6 +89,6 @@ Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) · Security: [SECURITY.md](SECU
 
 ## Licence
 
-MIT. Every dependency is MIT or Apache-2.0, and the embedding model
-(`minishlab/potion-retrieval-32M`) is MIT and downloaded at install time rather than
-vendored.
+MIT. Every dependency is MIT or Apache-2.0, and both models —
+`minishlab/potion-retrieval-32M` and the optional reranker `BAAI/bge-small-en-v1.5` — are
+MIT and downloaded at install time rather than vendored.

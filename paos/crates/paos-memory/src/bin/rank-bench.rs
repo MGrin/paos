@@ -112,6 +112,10 @@ fn rerank(e: &dyn Embedder, query: &str, texts: &[String]) -> Vec<usize> {
 }
 
 /// Rank of the correct fact for each case, 0-indexed; `None` is a miss.
+///
+/// When `PAOS_BENCH_TWO_STAGE=1`, this goes through `recall_reranked` with the STORED
+/// second-stage vectors — the exact path the daemon serves. `--rerank` measures the idea;
+/// this measures the deployment, and those are different claims.
 fn ranks(conn: &Connection, e: &dyn Embedder, cases: &[Case], top_k: usize) -> Vec<Option<usize>> {
     cases
         .iter()
@@ -123,6 +127,18 @@ fn ranks(conn: &Connection, e: &dyn Embedder, cases: &[Case], top_k: usize) -> V
                 Ok(p) if !p.is_empty() => format!("{p}{}", c.question),
                 _ => c.question.clone(),
             };
+            #[cfg(feature = "bert")]
+            let hits = if std::env::var("PAOS_BENCH_TWO_STAGE").is_ok() {
+                let second = BertEmbedder::from_dir(&BertEmbedder::default_dir()).ok();
+                paos_memory::recall_reranked(
+                    conn, e, second.as_ref().map(|b| b as &dyn Embedder), &[c.dataset.clone()],
+                    &q, top_k,
+                )
+                .unwrap_or_default()
+            } else {
+                recall(conn, e, &[c.dataset.clone()], &q, top_k).unwrap_or_default()
+            };
+            #[cfg(not(feature = "bert"))]
             let hits = recall(conn, e, &[c.dataset.clone()], &q, top_k).unwrap_or_default();
             let needle = c.needle.to_lowercase();
             hits.iter()
@@ -263,6 +279,20 @@ fn main() {
 
     let n = cases.len();
     println!("  {n} case(s), top-{top_k}, model {}", embedder.id());
+
+    #[cfg(feature = "bert")]
+    if let Some(i) = args.iter().position(|a| a == "--rerank-sweep") {
+        let depth: usize = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(30);
+        let second = match BertEmbedder::from_dir(&BertEmbedder::default_dir()) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("rank-bench: bert unavailable ({e})");
+                std::process::exit(1);
+            }
+        };
+        rerank_sweep(&conn, embedder, &second, &cases, top_k, depth);
+        return;
+    }
 
     #[cfg(feature = "bert")]
     if let Some(i) = args.iter().position(|a| a == "--rerank") {
@@ -458,4 +488,73 @@ fn score_reranked(
         }
     }
     (hit1, hitk, mrr / cases.len().max(1) as f64)
+}
+
+#[cfg(feature = "bert")]
+/// Reciprocal-rank fusion of the two stages, swept over the blend.
+///
+/// RRF rather than a weighted sum of scores because the two stages are not on the same
+/// scale: stage one is a cosine blended with a lexical fraction and sits around 0.1-0.4,
+/// stage two is a raw cosine around 0.4-0.7. Adding those directly would make the blend
+/// weight a proxy for whichever happened to be numerically larger. Ranks have no units.
+///
+/// Both orderings are computed ONCE per question and every blend is evaluated from them,
+/// so the sweep costs one pass rather than one pass per value.
+fn rerank_sweep(
+    conn: &Connection,
+    first: &dyn Embedder,
+    second: &dyn Embedder,
+    cases: &[Case],
+    top_k: usize,
+    depth: usize,
+) {
+    const K: f64 = 60.0;
+    // (stage-1 order is the identity; stage-2 order; which index holds the answer)
+    // ALL matching candidates, not the first one. Every other path here counts a hit if
+    // any returned fact contains the needle, and in a large brain several legitimately
+    // do; scoring only the first would have made the sweep disagree with `--rerank` on
+    // the same data — which it did, by 0.088 MRR, until this was fixed.
+    let mut per_case: Vec<(Vec<usize>, Vec<usize>, usize)> = Vec::new();
+    for c in cases {
+        let hits = recall(conn, first, &[c.dataset.clone()], &c.question, depth).unwrap_or_default();
+        let texts: Vec<String> = hits.iter().map(|h| h.memory.text.clone()).collect();
+        let needle = c.needle.to_lowercase();
+        let answers: Vec<usize> = texts
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.to_lowercase().contains(&needle))
+            .map(|(i, _)| i)
+            .collect();
+        per_case.push((rerank(second, &c.question, &texts), answers, texts.len()));
+    }
+    let n = cases.len();
+    println!("\n  blend  hit@1  hit@{top_k}    MRR     (0.0 = first stage only, 1.0 = rerank only)");
+    for step in 0..=4 {
+        let b = step as f64 / 4.0;
+        let (mut hit1, mut hitk, mut mrr) = (0usize, 0usize, 0.0f64);
+        for (order, answers, len) in &per_case {
+            if answers.is_empty() {
+                continue;
+            }
+            // Rank of each candidate under each stage, then fuse.
+            let mut rank2 = vec![0usize; *len];
+            for (r, &i) in order.iter().enumerate() {
+                rank2[i] = r;
+            }
+            let mut fused: Vec<(usize, f64)> = (0..*len)
+                .map(|i| {
+                    (i, (1.0 - b) / (K + i as f64) + b / (K + rank2[i] as f64))
+                })
+                .collect();
+            fused.sort_by(|x, y| y.1.total_cmp(&x.1));
+            if let Some(p) = fused.iter().take(top_k).position(|(i, _)| answers.contains(i)) {
+                if p == 0 {
+                    hit1 += 1;
+                }
+                hitk += 1;
+                mrr += 1.0 / (p + 1) as f64;
+            }
+        }
+        println!("  {b:>5.2}  {hit1:>2}/{n}  {hitk:>2}/{n}  {:.3}", mrr / n as f64);
+    }
 }

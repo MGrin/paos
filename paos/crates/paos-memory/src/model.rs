@@ -11,6 +11,14 @@ use std::path::Path;
 /// wrong hash fails as a 404 nobody can diagnose.
 const REPO: &str = "https://huggingface.co/minishlab/potion-retrieval-32M/resolve/main";
 
+/// The second-stage judge. Same three files, so it reuses the whole installer.
+///
+/// A separate 133 MB and therefore a separate, OPTIONAL install: it doubles the download
+/// and buys about 18% MRR, which is a trade the person installing gets to make. Recall
+/// works without it, exactly as it did before.
+const RERANK_REPO: &str =
+    "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Install {
     AlreadyPresent,
@@ -26,6 +34,15 @@ pub fn files() -> [&'static str; 3] {
 
 pub fn url(file: &str) -> String {
     format!("{REPO}/{file}")
+}
+
+pub fn rerank_url(file: &str) -> String {
+    format!("{RERANK_REPO}/{file}")
+}
+
+/// Install the second-stage model. Same shape as `ensure`, different repo.
+pub fn ensure_rerank(dir: &Path) -> Install {
+    ensure_from(dir, &rerank_url, &fetch)
 }
 
 /// Is every file present AND non-empty?
@@ -44,6 +61,16 @@ pub fn ensure(dir: &Path) -> Install {
 
 /// The fetcher is a parameter so every branch is testable without a network.
 pub fn ensure_with(dir: &Path, fetch: &dyn Fn(&str, &Path) -> Result<(), String>) -> Install {
+    ensure_from(dir, &url, fetch)
+}
+
+/// The shared installer: which repo is a parameter, so the second model cannot drift into
+/// a second copy of the resume/rename/verify logic that this one already gets right.
+pub fn ensure_from(
+    dir: &Path,
+    url_of: &dyn Fn(&str) -> String,
+    fetch: &dyn Fn(&str, &Path) -> Result<(), String>,
+) -> Install {
     if complete(dir) {
         return Install::AlreadyPresent;
     }
@@ -58,7 +85,7 @@ pub fn ensure_with(dir: &Path, fetch: &dyn Fn(&str, &Path) -> Result<(), String>
         // Download beside the target and rename, so an interrupted run never leaves a
         // truncated file that the next run counts as present.
         let tmp = dir.join(format!("{f}.part"));
-        if let Err(e) = fetch(&url(f), &tmp) {
+        if let Err(e) = fetch(&url_of(f), &tmp) {
             let _ = std::fs::remove_file(&tmp);
             return Install::Failed(format!("{f}: {e}"));
         }

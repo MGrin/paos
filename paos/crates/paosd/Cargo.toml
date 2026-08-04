@@ -22,3 +22,11 @@ paos-operator = { path = "../paos-operator" }
 # Same version as the store: sharing one rusqlite avoids two linked SQLite copies.
 rusqlite.workspace = true
 serde_json.workspace = true
+
+[features]
+# paosd needs its OWN feature, not just the dependency's. `#[cfg(feature = "bert")]` in
+# this crate reads THIS crate's features, so enabling paos-memory/bert from the dependency
+# line compiled the reranker in and then compiled the code that loads it out — the daemon
+# started, logged "no reranker", and looked like a working single-stage install.
+default = ["bert"]
+bert = ["paos-memory/bert"]

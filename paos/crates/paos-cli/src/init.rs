@@ -66,6 +66,26 @@ pub fn run(_args: &[String]) -> i32 {
     };
     steps.push(("model", installed));
 
+    // OPTIONAL, and asked rather than assumed: it doubles the download for about 18% MRR,
+    // which is the installer's trade to make, not ours. Declining leaves single-stage
+    // recall — exactly what paos did before this model existed.
+    let rerank_dir = std::path::Path::new(&home).join(".cache/paos/models/bge-small-en-v1.5");
+    let want_rerank = prompt(
+        "\ninstall the reranker too? another 133 MB, and recall gets measurably better [y/N] ",
+    )
+    .to_lowercase();
+    if want_rerank.starts_with('y') {
+        println!("installing the reranker (133 MB, once)…");
+        match paos_memory::model::ensure_rerank(&rerank_dir) {
+            paos_memory::model::Install::AlreadyPresent => println!("  already there"),
+            paos_memory::model::Install::Installed => {
+                println!("  done — run `paos memory rerank-index` to index existing facts");
+            }
+            paos_memory::model::Install::Failed(e) => println!("  could not install: {e}"),
+        }
+        steps.push(("reranker", rerank_dir.join("model.safetensors").exists()));
+    }
+
     let want = prompt("\nconfigure Telegram now? [y/N] ").to_lowercase();
     let mut tg = false;
     if want.starts_with('y') {

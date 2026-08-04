@@ -66,6 +66,32 @@ where
         "graph" => cmd_graph(),
         "forget" => cmd_forget(db, positional.get(2).map(String::as_str), flag(args, "--force"),
                                &send),
+        "rerank-index" => {
+            // Batched, and it SAYS what is left. A one-shot that ran for minutes would
+            // hold the single writer and look hung; a batch that reported only what it
+            // did would leave the caller unable to tell finished from more-to-do.
+            let batch = value(args, "--limit").and_then(|v| v.parse().ok()).unwrap_or(200);
+            loop {
+                match send(&Request::RerankIndex { limit: batch }) {
+                    Some(Response::Ok { lines }) => {
+                        let line = lines.join(" ");
+                        println!("{line}");
+                        if line.contains("0 still unindexed") || line.starts_with("indexed 0,") {
+                            break;
+                        }
+                    }
+                    Some(Response::Err { message, exit_code }) => {
+                        eprintln!("memory: {message}");
+                        return exit_code;
+                    }
+                    None => {
+                        eprintln!("memory: paosd unreachable");
+                        return 1;
+                    }
+                }
+            }
+            0
+        }
         "review" => cmd_review(db, flag(args, "--all")),
         "approve" | "reject" => cmd_decide(db, sub, positional, flag(args, "--all"), &send),
         // The librarian passes. All the judgement is in paos-librarian; this only routes.

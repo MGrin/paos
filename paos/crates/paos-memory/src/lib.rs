@@ -138,6 +138,17 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     // The fact's own embedding is never touched either way, so nothing that already
     // worked can regress.
     let _ = conn.execute("ALTER TABLE memories ADD COLUMN alias_embedding BLOB", []);
+    // A SECOND vector per fact, from a slower model that only ever sees a shortlist.
+    //
+    // bge-small-en-v1.5 LOSES as a retriever on this corpus (MRR 0.507 against 0.550) and
+    // WINS as a judge of the first stage's top thirty (0.545 -> 0.644 fused). It is poor
+    // at scanning 468 candidates and good at ordering 30, which is exactly the shape of a
+    // two-stage retriever.
+    //
+    // Precomputed rather than embedded at query time: judging thirty long facts live
+    // costs about three seconds, and one query embedding plus thirty dot products costs
+    // about ten milliseconds.
+    let _ = conn.execute("ALTER TABLE memories ADD COLUMN rerank_embedding BLOB", []);
     Ok(())
 }
 
@@ -309,6 +320,111 @@ pub fn corpus_spread(conn: &Connection, dataset: &str, sample: usize) -> Option<
         }
     }
     Some(((total / pairs as f64) as f32, vecs.len()))
+}
+
+/// How many first-stage candidates the second stage is allowed to reorder.
+///
+/// Thirty because that is where the answer actually is: on the worst brain 7 of 8 golden
+/// questions had the right fact inside the top thirty while only 3 were inside the top
+/// five. Reordering more would cost linearly and reorder facts the first stage already
+/// ruled out with good reason.
+pub const RERANK_DEPTH: usize = 30;
+
+/// Weight of the second stage in the rank fusion. 0.0 ignores it, 1.0 obeys it entirely.
+///
+/// Swept over 70 questions: 0.0 scored MRR 0.545, 0.5 and 0.75 both 0.644, 1.0 0.629.
+/// 0.5 is taken for the better hit@1 (38/70 against 37) and because it is interior — at
+/// 1.0 the first stage's ordering is discarded, and a brain that was already perfect
+/// falls from 1.000 to 0.719 when that happens.
+pub const RERANK_BLEND_DEFAULT: f64 = 0.5;
+
+/// Reciprocal-rank-fusion constant, the conventional 60.
+///
+/// Fusion is on RANKS, not scores, because the two stages have no common scale: the first
+/// is a cosine blended with a lexical fraction (0.1-0.4 here), the second a raw cosine
+/// (0.4-0.7). Summing those would make the blend weight a proxy for whichever number
+/// happened to be larger.
+const RRF_K: f64 = 60.0;
+
+fn rerank_blend() -> f64 {
+    std::env::var("PAOS_RERANK_BLEND")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|b: &f64| (0.0..=1.0).contains(b))
+        .unwrap_or(RERANK_BLEND_DEFAULT)
+}
+
+/// Store the second-stage vector for one fact. `None` embedder clears it.
+pub fn set_rerank_vector(
+    conn: &Connection,
+    embedder: &dyn Embedder,
+    id: &str,
+) -> rusqlite::Result<bool> {
+    let text: String = match conn
+        .query_row("SELECT text FROM memories WHERE id = ?1", [id], |r| r.get(0))
+    {
+        Ok(t) => t,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let v = encode(&embedder.embed(&text));
+    Ok(conn.execute("UPDATE memories SET rerank_embedding = ?1 WHERE id = ?2", params![v, id])? > 0)
+}
+
+/// Recall, then let a second model reorder the shortlist.
+///
+/// Degrades to plain `recall` whenever the second stage cannot contribute — no embedder,
+/// or candidates with no stored vector. That is the normal state on a fresh install and
+/// after an upgrade, and recall going quiet would be a far worse failure than recall
+/// merely being as good as it was yesterday.
+pub fn recall_reranked(
+    conn: &Connection,
+    first: &dyn Embedder,
+    second: Option<&dyn Embedder>,
+    datasets: &[String],
+    query: &str,
+    top_k: usize,
+) -> rusqlite::Result<Vec<Hit>> {
+    let Some(second) = second else {
+        return recall(conn, first, datasets, query, top_k);
+    };
+    let shortlist = recall(conn, first, datasets, query, RERANK_DEPTH.max(top_k))?;
+    if shortlist.len() <= 1 {
+        return Ok(shortlist);
+    }
+    let q = second.embed(query);
+    let mut second_scores: Vec<(usize, f32)> = Vec::with_capacity(shortlist.len());
+    for (i, h) in shortlist.iter().enumerate() {
+        let stored: Option<Vec<u8>> = conn
+            .query_row("SELECT rerank_embedding FROM memories WHERE id = ?1", [&h.memory.id], |r| {
+                r.get(0)
+            })
+            .unwrap_or(None);
+        match stored {
+            Some(b) => second_scores.push((i, cosine(&q, &decode(&b)))),
+            // Missing vector: keep the fact, give it no second-stage opinion. Dropping it
+            // would make a half-indexed store retrieve WORSE than an unindexed one.
+            None => second_scores.push((i, f32::MIN)),
+        }
+    }
+    if second_scores.iter().all(|(_, s)| *s == f32::MIN) {
+        return Ok(shortlist.into_iter().take(top_k).collect());
+    }
+    second_scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut rank2 = vec![shortlist.len(); shortlist.len()];
+    for (r, (i, _)) in second_scores.iter().enumerate() {
+        rank2[*i] = r;
+    }
+    let b = rerank_blend();
+    let mut fused: Vec<(usize, f64)> = (0..shortlist.len())
+        .map(|i| (i, (1.0 - b) / (RRF_K + i as f64) + b / (RRF_K + rank2[i] as f64)))
+        .collect();
+    fused.sort_by(|x, y| y.1.total_cmp(&x.1));
+    Ok(fused
+        .into_iter()
+        .take(top_k)
+        .map(|(i, _)| shortlist[i].clone())
+        .collect())
 }
 
 /// Mark `old_id` superseded by `new_id` so it stops being recalled but stays auditable.
@@ -648,6 +764,12 @@ mod tests {
         HashEmbedder::new(64)
     }
 
+    /// Just the order. Hit carries a score, and `recall` reinforces what it returns, so
+    /// two identical calls legitimately disagree on scores while agreeing on results.
+    fn ids(hits: &[Hit]) -> Vec<String> {
+        hits.iter().map(|h| h.memory.id.clone()).collect()
+    }
+
     #[test]
     fn phrasings_never_touch_the_facts_own_vector() {
         // Additive means additive. If attaching phrasings moved the fact's embedding, a
@@ -723,6 +845,67 @@ mod tests {
     fn setting_aliases_on_a_missing_fact_is_false_not_an_error() {
         let (c, e) = (db(), emb());
         assert!(!set_aliases(&c, &e, "no-such-id", Some("q")).unwrap());
+    }
+
+    #[test]
+    fn without_a_second_stage_reranked_recall_is_plain_recall() {
+        // The state of every fresh install and every store between upgrade and backfill.
+        // Recall going quiet here would be far worse than recall being as good as it was
+        // the day before.
+        let (c, e) = (db(), emb());
+        remember(&c, &e, "ds", "alpha deploy notes", "2026-08-01").unwrap();
+        remember(&c, &e, "ds", "beta rollback notes", "2026-08-01").unwrap();
+        // ORDER, not the Hit structs: `recall` reinforces what it returns, so the second
+        // call scores the same facts slightly higher than the first. Comparing scores
+        // would be asserting that reinforcement does not work.
+        assert_eq!(
+            ids(&recall(&c, &e, &["ds".to_string()], "alpha deploy", 2).unwrap()),
+            ids(&recall_reranked(&c, &e, None, &["ds".to_string()], "alpha deploy", 2).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_fact_with_no_second_vector_is_kept_not_dropped() {
+        // Half-indexed is the normal state during a backfill. Dropping un-indexed facts
+        // would make a store mid-backfill retrieve WORSE than one that never started.
+        let (c, e) = (db(), emb());
+        let indexed = remember(&c, &e, "ds", "alpha deploy notes", "2026-08-01").unwrap();
+        remember(&c, &e, "ds", "alpha deploy runbook", "2026-08-01").unwrap();
+        let second = HashEmbedder::new(128);
+        set_rerank_vector(&c, &second, &indexed).unwrap();
+        let hits =
+            recall_reranked(&c, &e, Some(&second), &["ds".to_string()], "alpha deploy", 5).unwrap();
+        assert_eq!(hits.len(), 2, "the un-indexed fact must still be returned");
+    }
+
+    #[test]
+    fn with_no_second_vectors_at_all_the_first_stage_order_survives() {
+        let (c, e) = (db(), emb());
+        remember(&c, &e, "ds", "alpha deploy notes", "2026-08-01").unwrap();
+        remember(&c, &e, "ds", "totally unrelated invoice policy", "2026-08-01").unwrap();
+        let second = HashEmbedder::new(128);
+        assert_eq!(
+            ids(&recall(&c, &e, &["ds".to_string()], "alpha deploy", 2).unwrap()),
+            ids(&recall_reranked(&c, &e, Some(&second), &["ds".to_string()], "alpha deploy", 2)
+                .unwrap())
+        );
+    }
+
+    #[test]
+    fn the_blend_can_be_turned_off_and_then_the_second_stage_cannot_reorder() {
+        // The escape hatch has to actually escape: if a second stage ever makes recall
+        // worse, PAOS_RERANK_BLEND=0 must restore yesterday's behaviour exactly.
+        let (c, e) = (db(), emb());
+        for t in ["alpha deploy notes", "alpha deploy runbook", "alpha deploy plan"] {
+            let id = remember(&c, &e, "ds", t, "2026-08-01").unwrap();
+            set_rerank_vector(&c, &HashEmbedder::new(128), &id).unwrap();
+        }
+        let plain = ids(&recall(&c, &e, &["ds".to_string()], "alpha deploy", 3).unwrap());
+        std::env::set_var("PAOS_RERANK_BLEND", "0");
+        let two = ids(&recall_reranked(&c, &e, Some(&HashEmbedder::new(128)), &["ds".to_string()],
+                                       "alpha deploy", 3).unwrap());
+        std::env::remove_var("PAOS_RERANK_BLEND");
+        assert_eq!(plain, two);
     }
 
     #[test]

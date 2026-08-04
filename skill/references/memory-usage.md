@@ -46,12 +46,21 @@ re-deriving or re-scanning something you already knew is not.
   `paos memory review` lists pending proposals; `paos memory approve <id>|--all` /
   `reject <id>` resolve them. Nothing is written to long-term memory without an
   explicit approve.
+- **Two-stage recall:** when the optional reranker model is installed, recall proposes 30
+  candidates with the fast model and lets `bge-small-en-v1.5` reorder them. Measured on a
+  70-question golden set: MRR 0.545 -> 0.633, hit@1 31/70 -> 38/70, at a cost of about
+  27 ms per recall. It is OPTIONAL — without the model recall is single-stage and
+  unchanged. `paos memory rerank-index` indexes existing facts (resumable, says what is
+  left); new facts are indexed as they are written. `PAOS_RERANK_BLEND=0` turns the second
+  stage off without uninstalling anything.
 - **Phrasings:** `paos memory phrasings [--dataset <ds>] [--limit N] [--dry-run]` attaches
   the questions a fact answers, so a query that shares none of its words can still reach
   it. The phrasings are embedded and **never displayed** — the fact itself is untouched —
-  so this one writes directly instead of queueing. Measured on a 30-question golden set:
-  hit@1 11/30 → 13/30, MRR 0.509 → 0.553. `--clear` reverses a pass; `--reembed`
-  re-vectorises phrasings already on disk without paying the model again.
+  so this one writes directly instead of queueing. Measured on 70 questions across 7
+  brains it is **approximately neutral** — MRR 0.508 → 0.523, three brains better and
+  three worse. An earlier 30-question run reported +8.6% and that was noise. `--clear`
+  reverses a pass; `--reembed` re-vectorises phrasings already on disk without paying the
+  model again.
 - **Dream (learn from past sessions):** `paos memory dream [--since 24h] [--limit N]
   [--session <id>] [--dry-run]` reads recent **Claude Code** sessions (via the
   `trajectory` facet), normalizes + chunks them, and distills each into candidate

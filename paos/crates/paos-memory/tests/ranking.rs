@@ -8,11 +8,14 @@
 //!
 //! EVERY FIXTURE HERE IS BUILT TO FAIL WHEN ITS SIGNAL IS REMOVED, and the first draft of
 //! this file was not. It asserted things that were already true: with two facts and a
-//! bag-of-words embedder, the "right" one won on plain similarity, so deleting the alias
-//! term AND flattening the usefulness multiplier left all four tests green. A guard that
-//! cannot fail is worse than no guard, because it is also a claim. The distractors below
-//! are deliberately closer to the query than the target, so only the signal under test
-//! can separate them — verified by mutating the source and watching each one go red.
+//! bag-of-words embedder, the "right" one won on plain similarity, so flattening the
+//! usefulness multiplier left every test green. A guard that cannot fail is worse than no
+//! guard, because it is also a claim. The distractors below are deliberately closer to the
+//! query than the target, so only the signal under test can separate them — verified by
+//! mutating the source and watching each one go red.
+//!
+//! Two fixtures were deleted with the phrasings signal they guarded. A test whose feature
+//! is gone is not free: it is a claim about behaviour nobody can now change.
 //!
 //! WHAT THIS DOES NOT PROVE. It runs on `HashEmbedder`, so it says nothing about semantic
 //! quality; a change that made real retrieval worse could still pass. And the lexical
@@ -20,7 +23,7 @@
 //! signal and the lexical term agree by construction and no fixture can separate them.
 //! Gating that one needs the real embedder, which means `rank-bench`.
 
-use paos_memory::{ensure_schema, recall, remember, set_aliases, Embedder, HashEmbedder};
+use paos_memory::{ensure_schema, recall, remember, Embedder, HashEmbedder};
 use rusqlite::Connection;
 
 fn store() -> (Connection, HashEmbedder) {
@@ -38,19 +41,6 @@ fn top(c: &Connection, e: &dyn Embedder, q: &str) -> String {
 }
 
 #[test]
-fn a_phrasing_beats_a_fact_that_merely_shares_the_questions_words() {
-    // The distractor carries four of the query's five words and the target carries none,
-    // so the phrasing is the ONLY thing that can win this. Remove the alias term from
-    // recall's scoring and the distractor takes first place.
-    let (c, e) = store();
-    let id = remember(&c, &e, "ds", "kettle boils at one hundred", "2026-08-01").unwrap();
-    remember(&c, &e, "ds", "how hot the office gets in summer is a running complaint",
-             "2026-08-01").unwrap();
-    set_aliases(&c, &e, &id, Some("how hot does water get")).unwrap();
-    assert_eq!(top(&c, &e, "how hot does water get"), "kettle boils at one hundred");
-}
-
-#[test]
 fn a_fact_that_has_earned_its_place_outranks_an_identical_one() {
     // The distractor is an EXACT match for the query and the target is not, so the target
     // can only win by having earned it. An earlier draft used two anagrams, assuming a
@@ -63,20 +53,6 @@ fn a_fact_that_has_earned_its_place_outranks_an_identical_one() {
         paos_memory::reinforce(&c, &[&used]).unwrap();
     }
     assert_eq!(top(&c, &e, "alpha deploy"), "alpha deploy notes");
-}
-
-#[test]
-fn clearing_phrasings_gives_the_ranking_back() {
-    // Reversibility as a RANKING property, not a storage one. `--clear` is the promise
-    // that a bad phrasings pass can be undone; if the vector outlived the column, the
-    // store would keep answering from phrasings it no longer admits to having.
-    let (c, e) = store();
-    let id = remember(&c, &e, "ds", "kettle boils at one hundred", "2026-08-01").unwrap();
-    remember(&c, &e, "ds", "how hot the office gets in summer is a running complaint",
-             "2026-08-01").unwrap();
-    set_aliases(&c, &e, &id, Some("how hot does water get")).unwrap();
-    set_aliases(&c, &e, &id, None).unwrap();
-    assert_ne!(top(&c, &e, "how hot does water get"), "kettle boils at one hundred");
 }
 
 #[test]

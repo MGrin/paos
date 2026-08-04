@@ -95,7 +95,7 @@ where
         "review" => cmd_review(db, flag(args, "--all")),
         "approve" | "reject" => cmd_decide(db, sub, positional, flag(args, "--all"), &send),
         // The librarian passes. All the judgement is in paos-librarian; this only routes.
-        "draft" | "dream" | "lessons" | "tidy" | "split" | "phrasings" => {
+        "draft" | "dream" | "lessons" | "tidy" | "split" => {
             crate::librarian::run(sub, &positional[1..], args, db, send)
         }
         other => {

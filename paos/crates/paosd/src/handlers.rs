@@ -553,14 +553,6 @@ pub fn dispatch(daemon: &Daemon, req: Request) -> Response {
                 .unwrap_or(0);
             Response::ok(format!("indexed {done}, {left} still unindexed"))
         }
-        Request::SetAliases { id, aliases } => {
-            let g = lock(daemon);
-            match paos_memory::set_aliases(&g, daemon.embedder.as_ref(), &id, aliases.as_deref()) {
-                Ok(true) => Response::ok(format!("phrasings set on {id}")),
-                Ok(false) => Response::err(format!("no memory with id {id}"), 3),
-                Err(e) => Response::err(format!("phrasings failed: {e}"), 1),
-            }
-        }
         Request::Supersede { old_ids, tier, origin, text, dataset } => {
             if text.trim().is_empty() {
                 return Response::err("refusing to store an empty fact", 1);

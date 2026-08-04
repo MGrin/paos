@@ -53,14 +53,7 @@ re-deriving or re-scanning something you already knew is not.
   unchanged. `paos memory rerank-index` indexes existing facts (resumable, says what is
   left); new facts are indexed as they are written. `PAOS_RERANK_BLEND=0` turns the second
   stage off without uninstalling anything.
-- **Phrasings:** `paos memory phrasings [--dataset <ds>] [--limit N] [--dry-run]` attaches
-  the questions a fact answers, so a query that shares none of its words can still reach
-  it. The phrasings are embedded and **never displayed** — the fact itself is untouched —
-  so this one writes directly instead of queueing. Measured on 70 questions across 7
-  brains it is **approximately neutral** — MRR 0.508 → 0.523, three brains better and
-  three worse. An earlier 30-question run reported +8.6% and that was noise. `--clear`
-  reverses a pass; `--reembed` re-vectorises phrasings already on disk without paying the
-  model again.
+
 - **Dream (learn from past sessions):** `paos memory dream [--since 24h] [--limit N]
   [--session <id>] [--dry-run]` reads recent **Claude Code** sessions (via the
   `trajectory` facet), normalizes + chunks them, and distills each into candidate

@@ -147,6 +147,7 @@ fn main() {
         .unwrap_or(5usize);
     let sweep = args.iter().any(|a| a == "--sweep");
     let sweep_alias = args.iter().any(|a| a == "--sweep-alias");
+    let corpus = args.iter().any(|a| a == "--corpus");
 
     let raw = match std::fs::read_to_string(positional[1]) {
         Ok(r) => r,
@@ -201,6 +202,41 @@ fn main() {
 
     let n = cases.len();
     println!("  {n} case(s), top-{top_k}, model {}", embedder.id());
+
+    if corpus {
+        // Diagnosis, not scoring: how much room the embedding has to tell one fact from
+        // another in each brain. A high mean pairwise cosine means the corpus is flat and
+        // no ranking change can help it.
+        let mut brains: Vec<&str> = cases.iter().map(|c| c.dataset.as_str()).collect();
+        brains.sort_unstable();
+        brains.dedup();
+        println!("\n  brain                              facts  pairwise  top1   margin");
+        for b in brains {
+            let (pw, n) = paos_memory::corpus_spread(&conn, b, 400).unwrap_or((0.0, 0));
+            // The margin is the number that decides whether ranking is a decision or a
+            // coin flip: how far the best hit stands above the fifth. Fact-to-fact
+            // similarity says how alike the corpus is IN GENERAL; this says how much
+            // room the embedder has to separate candidates FOR AN ACTUAL QUESTION, which
+            // is the thing recall depends on.
+            let qs: Vec<&Case> = cases.iter().filter(|c| c.dataset == b).collect();
+            let (mut top1, mut margin, mut seen) = (0.0f64, 0.0f64, 0usize);
+            for c in &qs {
+                let hits = recall(&conn, &embedder, &[b.to_string()], &c.question, 5)
+                    .unwrap_or_default();
+                if hits.len() >= 5 {
+                    top1 += hits[0].score as f64;
+                    margin += (hits[0].score - hits[4].score) as f64;
+                    seen += 1;
+                }
+            }
+            let d = seen.max(1) as f64;
+            println!("  {b:<34} {n:>5}     {pw:.3}  {:.3}   {:.3}", top1 / d, margin / d);
+        }
+        println!("\n  pairwise = how alike the facts are to each other.");
+        println!("  margin   = score@1 minus score@5 for the real questions. A small margin");
+        println!("             means the top five are indistinguishable and rank order is noise.");
+        return;
+    }
 
     if sweep_alias {
         println!("\n  penalty  hit@1  hit@{top_k}    MRR");

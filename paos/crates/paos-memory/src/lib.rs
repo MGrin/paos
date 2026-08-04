@@ -271,6 +271,42 @@ pub fn set_aliases(
     Ok(n > 0)
 }
 
+/// How ALIKE the facts in one dataset are: mean pairwise cosine, and how many were used.
+///
+/// This is the number that explains a brain whose answers are present but badly ordered.
+/// Recall can only separate facts that the embedding separates; in a corpus where every
+/// entry opens with the same project name and shares the same jargon, the vectors cluster
+/// so tightly that the right fact sits twentieth among near-identical neighbours. No
+/// ranking knob repairs that, because there is nothing left to rank on.
+///
+/// Capped at `sample` facts because this is O(n²) and only ever wanted as an indicator.
+pub fn corpus_spread(conn: &Connection, dataset: &str, sample: usize) -> Option<(f32, usize)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT embedding FROM memories WHERE dataset=?1 AND superseded IS NULL LIMIT ?2",
+        )
+        .ok()?;
+    let vecs: Vec<Vec<f32>> = stmt
+        .query_map(params![dataset, sample as i64], |r| {
+            Ok(decode(&r.get::<_, Vec<u8>>(0)?))
+        })
+        .ok()?
+        .filter_map(|v| v.ok())
+        .collect();
+    if vecs.len() < 2 {
+        return None;
+    }
+    let mut total = 0.0f64;
+    let mut pairs = 0usize;
+    for i in 0..vecs.len() {
+        for j in (i + 1)..vecs.len() {
+            total += cosine(&vecs[i], &vecs[j]) as f64;
+            pairs += 1;
+        }
+    }
+    Some(((total / pairs as f64) as f32, vecs.len()))
+}
+
 /// Mark `old_id` superseded by `new_id` so it stops being recalled but stays auditable.
 pub fn supersede(conn: &Connection, old_id: &str, new_id: &str) -> rusqlite::Result<bool> {
     let n = conn.execute(

@@ -22,12 +22,16 @@ pub mod doctor;
 
 use rusqlite::{params, Connection};
 
+#[cfg(feature = "bert")]
+pub mod bert;
 pub mod difflib;
 pub mod embed;
 pub mod health;
 pub mod model;
 pub mod scope;
 
+#[cfg(feature = "bert")]
+pub use bert::BertEmbedder;
 pub use embed::{best_available, Embedder, HashEmbedder, Model2VecEmbedder};
 
 /// A stored memory.
@@ -330,11 +334,21 @@ pub fn forget(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 /// ANN index would be pure complexity until ~100k facts.
 /// Weight of the lexical signal in the blend.
 ///
-/// 0.25 is deliberately modest: dense similarity is doing the real work (recall@5 is 91%,
-/// so the right fact is almost always present) and the lexical term only needs to break
-/// ties within that window. A larger weight starts promoting facts that merely share
-/// vocabulary, which is the failure that made `curate` useless.
-const LEXICAL_WEIGHT_DEFAULT: f32 = 0.25;
+/// 0.5, and it is the only ranking change this corpus has ever unambiguously wanted. Swept
+/// 0.0 to 1.0 over 70 questions across 7 brains: 0.25 scored MRR 0.505, the plateau from
+/// 0.4 to 0.6 all scored above 0.536, and BOTH ends collapse — 0.412 at pure dense, 0.344
+/// at pure lexical. Neither signal is sufficient alone and the mixture is broad rather
+/// than a spike, which is why this is trustworthy where a two-question difference is not.
+///
+/// Per brain at 0.5, not one of the seven is worse than at 0.25 and five improve, the
+/// largest being a brain that goes from 6/8 to 8/8. That is seven independent subsets
+/// agreeing, not one average moving.
+///
+/// The old value of 0.25 came with the reasoning that dense similarity "is doing the real
+/// work" and lexical "only needs to break ties". Measured, that is backwards for this
+/// corpus: these are engineering notes full of identifiers, paths and flags, and the exact
+/// token is often the strongest evidence there is.
+const LEXICAL_WEIGHT_DEFAULT: f32 = 0.5;
 
 /// Overridable so the blend can be A/B'd against itself on IDENTICAL queries.
 /// `PAOS_LEXICAL_WEIGHT=0` disables reranking entirely, which is the control arm.
@@ -519,6 +533,13 @@ pub fn stable_id(dataset: &str, text: &str) -> String {
     }
     let key = format!("{dataset}\u{1}{}", normalise(text));
     format!("{:016x}{:016x}", fnv(0xcbf2_9ce4_8422_2325, key.as_bytes()), fnv(0x9e37_79b9_7f4a_7c15, key.as_bytes()))
+}
+
+/// The stored form of a vector. Public so a re-embedding tool writes bytes in exactly the
+/// format `recall` decodes, rather than a second implementation that agrees until it does
+/// not.
+pub fn encode_vec(v: &[f32]) -> Vec<u8> {
+    encode(v)
 }
 
 fn encode(v: &[f32]) -> Vec<u8> {

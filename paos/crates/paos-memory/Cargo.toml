@@ -11,3 +11,27 @@ license.workspace = true
 model2vec-rs = { version = "0.2.1", default-features = false, features = ["fancy-regex", "local-only"] }
 paos-store = { path = "../paos-store" }
 rusqlite.workspace = true
+
+# A real transformer next to the static one, so a candidate can be MEASURED against the
+# live corpus instead of argued about from MTEB. candle is HuggingFace's pure-Rust
+# framework: no ONNX Runtime, no C++ toolchain, so the single-binary property survives.
+# (fastembed/ort was the obvious alternative and links ONNX Runtime's C++ library.)
+candle-core = { version = "0.9", default-features = false, optional = true }
+candle-nn = { version = "0.9", default-features = false, optional = true }
+candle-transformers = { version = "0.9", default-features = false, optional = true }
+# fancy-regex, NOT the default onig backend: onig is a C library, and model2vec-rs
+# already takes the same escape hatch. Feature unification is workspace-wide, so
+# asking for onig here would have quietly re-added a C toolchain dependency for
+# every crate — verified by grepping onig out of Cargo.lock.
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"], optional = true }
+serde_json.workspace = true
+
+[features]
+# OFF by default. candle adds about a minute to a clean build and tens of megabytes of
+# object code for a tool that only runs when someone is evaluating a replacement embedder.
+# Nobody installing paos should pay for that; `cargo build --features bert` when you are.
+bert = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+
+[[bin]]
+name = "reembed"
+required-features = ["bert"]

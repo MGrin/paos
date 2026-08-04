@@ -24,6 +24,8 @@
 //! Usage: `rank-bench <paos.db> <golden.tsv> [--top-k N] [--sweep|--sweep-alias]`
 
 use paos_memory::{recall, Embedder, Model2VecEmbedder};
+#[cfg(feature = "bert")]
+use paos_memory::BertEmbedder;
 use rusqlite::Connection;
 use std::collections::HashSet;
 
@@ -86,7 +88,14 @@ fn ranks(conn: &Connection, e: &dyn Embedder, cases: &[Case], top_k: usize) -> V
     cases
         .iter()
         .map(|c| {
-            let hits = recall(conn, e, &[c.dataset.clone()], &c.question, top_k).unwrap_or_default();
+            // BGE is trained with an instruction on the QUERY side only. Its card says
+            // v1.5 degrades only slightly without it, but "slightly" is a claim about
+            // MTEB, not about this corpus — so it is a flag, and measured either way.
+            let q = match std::env::var("PAOS_QUERY_PREFIX") {
+                Ok(p) if !p.is_empty() => format!("{p}{}", c.question),
+                _ => c.question.clone(),
+            };
+            let hits = recall(conn, e, &[c.dataset.clone()], &q, top_k).unwrap_or_default();
             let needle = c.needle.to_lowercase();
             hits.iter()
                 .position(|h| h.memory.text.to_lowercase().contains(&needle))
@@ -183,19 +192,43 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let dir = Model2VecEmbedder::default_dir();
-    let embedder = match Model2VecEmbedder::from_dir(&dir) {
-        Ok(m) => m,
-        Err(e) => {
-            // The hash fallback would silently measure a DIFFERENT retrieval path than the
-            // one every session actually uses, and report it as the ranking.
-            eprintln!("rank-bench: model unavailable ({e}) — refusing to report ranking");
-            std::process::exit(1);
+    // The hash fallback would silently measure a DIFFERENT retrieval path than the one
+    // every session actually uses, and report it as the ranking — so an unavailable model
+    // is a hard exit, not a downgrade.
+    #[cfg(feature = "bert")]
+    let bert_requested = args.iter().any(|a| a == "--bert");
+    #[cfg(not(feature = "bert"))]
+    let bert_requested = false;
+    if !cfg!(feature = "bert") && args.iter().any(|a| a == "--bert") {
+        eprintln!("rank-bench: built without the bert feature — rebuild with --features bert");
+        std::process::exit(2);
+    }
+    let embedder: Box<dyn Embedder> = if bert_requested {
+        #[cfg(feature = "bert")]
+        {
+            match BertEmbedder::from_dir(&BertEmbedder::default_dir()) {
+                Ok(b) => Box::new(b) as Box<dyn Embedder>,
+                Err(e) => {
+                    eprintln!("rank-bench: bert unavailable ({e})");
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "bert"))]
+        unreachable!()
+    } else {
+        match Model2VecEmbedder::from_dir(&Model2VecEmbedder::default_dir()) {
+            Ok(m) => Box::new(m),
+            Err(e) => {
+                eprintln!("rank-bench: model unavailable ({e}) — refusing to report ranking");
+                std::process::exit(1);
+            }
         }
     };
+    let embedder = embedder.as_ref();
     // A store embedded with a different model is a different coordinate system; scoring it
     // produces numbers that look fine and mean nothing.
-    if let Err(e) = paos_memory::check_space(&conn, &embedder) {
+    if let Err(e) = paos_memory::check_space(&conn, embedder) {
         eprintln!("rank-bench: {e}");
         std::process::exit(1);
     }
@@ -221,7 +254,7 @@ fn main() {
             let qs: Vec<&Case> = cases.iter().filter(|c| c.dataset == b).collect();
             let (mut top1, mut margin, mut seen) = (0.0f64, 0.0f64, 0usize);
             for c in &qs {
-                let hits = recall(&conn, &embedder, &[b.to_string()], &c.question, 5)
+                let hits = recall(&conn, embedder, &[b.to_string()], &c.question, 5)
                     .unwrap_or_default();
                 if hits.len() >= 5 {
                     top1 += hits[0].score as f64;
@@ -243,7 +276,7 @@ fn main() {
         for step in 0..=8 {
             let w = step as f32 / 40.0;
             std::env::set_var("PAOS_ALIAS_PENALTY", format!("{w}"));
-            let r = score(&conn, &embedder, &cases, top_k);
+            let r = score(&conn, embedder, &cases, top_k);
             println!("  {w:>7.3}  {:>2}/{n}  {:>2}/{n}  {:>5.3}", r.hit1, r.hitk, r.mrr);
         }
         std::env::remove_var("PAOS_ALIAS_PENALTY");
@@ -257,7 +290,7 @@ fn main() {
         for step in 0..=10 {
             let w = step as f32 / 10.0;
             std::env::set_var("PAOS_LEXICAL_WEIGHT", format!("{w}"));
-            let r = score(&conn, &embedder, &cases, top_k);
+            let r = score(&conn, embedder, &cases, top_k);
             println!(
                 "  {w:>6.1}  {:>2}/{n}  {:>2}/{n}  {:>5.3}",
                 r.hit1, r.hitk, r.mrr
@@ -267,7 +300,7 @@ fn main() {
         return;
     }
 
-    detail(&conn, &embedder, &cases, top_k);
+    detail(&conn, embedder, &cases, top_k);
     // Per-brain, because the whole-set number hides the comparison that matters. A change
     // applied to ONE dataset moves the total by a fraction of its real effect, and reads
     // as noise next to the brains it never touched.
@@ -287,12 +320,12 @@ fn main() {
                 })
                 .collect();
             let n = subset.len();
-            let r = score(&conn, &embedder, &subset, top_k);
+            let r = score(&conn, embedder, &subset, top_k);
             println!("  {:<34} hit@1 {:>2}/{n}  hit@{top_k} {:>2}/{n}  MRR {:.3}",
                      b, r.hit1, r.hitk, r.mrr);
         }
     }
-    let r = score(&conn, &embedder, &cases, top_k);
+    let r = score(&conn, embedder, &cases, top_k);
     println!("\n  ── results ──────────────────────────────");
     println!("  hit@1  {:>2}/{n}", r.hit1);
     println!("  hit@{top_k}  {:>2}/{n}", r.hitk);

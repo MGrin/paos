@@ -21,6 +21,21 @@
 //! fact's distinctive vocabulary — the reported lexical overlap keeps that honest. A
 //! high overlap means the question leaked the answer's words and the case proves little.
 //!
+//! THE SET MEASURES THE QUESTION-WRITER TOO, and this is not a footnote. Twenty questions
+//! were written for one brain in two sittings, and they disagree wildly:
+//!
+//!   the first eight ...... hit@1 1/8   MRR 0.254   lexical overlap 35%
+//!   the next twelve ...... hit@1 7/12  MRR 0.642   lexical overlap 43%
+//!
+//! Same brain, same store, same hour. The first set were vague abstract paraphrases; the
+//! second named concrete things, and the overlap figure shows it. So comparing one BRAIN
+//! against another from a set like this is unsound — the difference may be entirely in how
+//! the questions were written.
+//!
+//! What IS sound is a before/after on a FIXED set: the questions are identical on both
+//! sides, so difficulty cancels and the delta is the change. Every ranking decision in
+//! this crate rests on that form, and none on cross-brain comparison.
+//!
 //! Usage: `rank-bench <paos.db> <golden.tsv> [--top-k N] [--sweep|--sweep-alias]`
 
 use paos_memory::{recall, Embedder, Model2VecEmbedder};

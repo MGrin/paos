@@ -156,6 +156,23 @@ pub fn approve(conn: &Connection, embedder: &dyn paos_memory::Embedder, id: i64)
                     Err(e) => Err(e),
                 }
             }
+            // Approving a retirement from the phone works the same as from the terminal,
+            // and uses the same sentinel — otherwise a fact retired on Telegram and one
+            // retired at a keyboard would be two different states.
+            paos_librarian::apply::Step::Retire { old_ids } => {
+                let mut r = Ok(());
+                for old in old_ids {
+                    if let Err(e) = conn.execute(
+                        "UPDATE memories SET superseded = 'retired' \
+                         WHERE id = ?1 AND superseded IS NULL",
+                        [old],
+                    ) {
+                        r = Err(e);
+                        break;
+                    }
+                }
+                r.map(|_| ())
+            }
         };
         if let Err(e) = outcome {
             // STAYS PENDING, so the tap can simply be repeated. A partially applied

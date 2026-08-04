@@ -95,7 +95,7 @@ where
         "review" => cmd_review(db, flag(args, "--all")),
         "approve" | "reject" => cmd_decide(db, sub, positional, flag(args, "--all"), &send),
         // The librarian passes. All the judgement is in paos-librarian; this only routes.
-        "draft" | "dream" | "lessons" | "tidy" | "split" => {
+        "draft" | "dream" | "lessons" | "tidy" | "split" | "retire" => {
             crate::librarian::run(sub, &positional[1..], args, db, send)
         }
         other => {
@@ -524,6 +524,9 @@ where
                             text: text.clone(),
                             dataset: Some(dataset.clone()),
                         },
+                        paos_librarian::apply::Step::Retire { old_ids } => {
+                            Request::Retire { ids: old_ids.clone() }
+                        }
                     };
                     match send(&req) {
                         Some(Response::Ok { .. }) => {}

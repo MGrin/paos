@@ -526,6 +526,26 @@ pub fn dispatch(daemon: &Daemon, req: Request) -> Response {
                 Err(e) => Response::err(format!("forget failed: {e}"), 1),
             }
         }
+        Request::Retire { ids } => {
+            if ids.is_empty() {
+                return Response::err("retire needs at least one id", 2);
+            }
+            let g = lock(daemon);
+            let mut done = 0usize;
+            for id in &ids {
+                // A sentinel, not a real superseding id: nothing replaced this fact. Every
+                // reader already filters on `superseded IS NULL`, so one UPDATE takes it
+                // out of recall and one more puts it back.
+                done += g
+                    .execute(
+                        "UPDATE memories SET superseded = 'retired' \
+                         WHERE id = ?1 AND superseded IS NULL",
+                        [id],
+                    )
+                    .unwrap_or(0);
+            }
+            Response::ok(format!("retired {done}"))
+        }
         Request::RerankIndex { limit } => {
             let Some(r) = daemon.reranker.as_deref() else {
                 return Response::err(

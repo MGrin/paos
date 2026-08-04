@@ -20,6 +20,14 @@ pub enum Step {
     Store { dataset: String, text: String },
     /// Store `text` AND retire every id in `old_ids`, atomically, under one daemon lock.
     StoreAndRetire { dataset: String, text: String, old_ids: Vec<String> },
+    /// Retire facts with nothing replacing them.
+    ///
+    /// The only step that removes without adding, and the only one whose mistake cannot
+    /// be spotted by reading what it wrote — there is nothing to read. That is why the
+    /// pass that produces it is the most conservative one here and why retirement sets
+    /// `superseded` rather than deleting: an approval that turns out wrong is one UPDATE
+    /// away from being undone.
+    Retire { old_ids: Vec<String> },
 }
 
 /// Why a proposal cannot be applied.
@@ -122,6 +130,14 @@ where
             }
             Ok(vec![Step::StoreAndRetire { dataset: ds, text, old_ids: targets }])
         }
+        // No text by design: a retirement proposes removing a fact, not replacing it, so
+        // the emptiness that refuses a supersede is the normal state here.
+        "retire" => {
+            if targets.is_empty() {
+                return Err(Refusal::AllSourcesGone);
+            }
+            Ok(vec![Step::Retire { old_ids: targets }])
+        }
         other => Err(Refusal::UnknownKind(other.to_string())),
     }
 }
@@ -137,6 +153,7 @@ pub fn refusal_retires(r: &Refusal) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     fn proposal(kind: &str, text: Option<&str>, targets: Option<&str>) -> Proposal {
         Proposal {
@@ -161,6 +178,28 @@ mod tests {
     }
     fn none_alive(_: &str) -> bool {
         false
+    }
+
+    #[test]
+    fn a_retirement_needs_no_replacement_text() {
+        // Every other kind refuses on empty text because it would retire facts and put
+        // nothing in their place. For a retirement that IS the intent, so the guard that
+        // protects the others must not fire here.
+        assert_eq!(
+            plan_apply(&proposal("retire", None, Some("f1")), all_alive).unwrap(),
+            vec![Step::Retire { old_ids: vec!["f1".into()] }]
+        );
+    }
+
+    #[test]
+    fn a_retirement_whose_target_is_already_gone_is_refused() {
+        // Not merely pointless — the resurrection guard exists because approving a stale
+        // proposal can undo a deletion, and a retirement of nothing should retire the
+        // PROPOSAL rather than sit in the queue forever.
+        assert_eq!(
+            plan_apply(&proposal("retire", None, Some("gone")), none_alive),
+            Err(Refusal::AllSourcesGone)
+        );
     }
 
     #[test]

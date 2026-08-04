@@ -100,6 +100,12 @@ pub enum Request {
         all_scopes: bool,
 },
     Forget { id: String },
+    /// Retire facts without replacing them: they stop being recalled but stay on disk.
+    ///
+    /// Distinct from `Forget`, which deletes. A retirement is a judgement that a fact has
+    /// stopped being useful, and judgements about a human's memory should be reversible
+    /// with an UPDATE rather than a restore from backup.
+    Retire { ids: Vec<String> },
     /// Compute second-stage vectors for facts that have none. Resumable by design: it
     /// indexes at most `limit` per call, so a 1,600-fact store is caught up in batches
     /// rather than holding the single writer for minutes.

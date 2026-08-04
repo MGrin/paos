@@ -54,6 +54,14 @@ re-deriving or re-scanning something you already knew is not.
   left); new facts are indexed as they are written. `PAOS_RERANK_BLEND=0` turns the second
   stage off without uninstalling anything.
 
+- **Retire (stale facts):** `paos memory retire [--dataset <ds>] [--limit N]
+  [--min-age-days D] [--dry-run]` samples facts older than D days (default 21) that nobody
+  has recalled recently, and proposes retiring the ones that are pure finished-work status
+  with no reusable lesson. QUEUED like every other pass — approval sets `superseded`
+  rather than deleting, so a wrong call is one UPDATE from being undone. It is a SAMPLER,
+  not a sweeper: a "keep" is not recorded, so re-running re-judges some facts. Calibration
+  note: on 56 facts sampled from this machine's store it proposed ZERO, while retiring
+  hand-picked status facts correctly — the old facts here are mostly durable.
 - **Dream (learn from past sessions):** `paos memory dream [--since 24h] [--limit N]
   [--session <id>] [--dry-run]` reads recent **Claude Code** sessions (via the
   `trajectory` facet), normalizes + chunks them, and distills each into candidate

@@ -74,6 +74,42 @@ Return ONLY a JSON array of the parts:
 [{"text": "<one self-contained fact>"}]
 Return [] to leave the entry alone."#;
 
+/// Judges whether one old fact has stopped being worth recalling.
+///
+/// The most conservative prompt here, and deliberately so: it is the only pass whose
+/// mistake removes something. Every other pass fails by adding noise a human can see and
+/// reject; this one fails by taking away a fact nobody will notice is missing until they
+/// need it. Hence "when in doubt, KEEP" stated twice and a default of keeping.
+///
+/// The distinction it has to make is between STATUS and LESSON, which live in the same
+/// sentence surprisingly often: "PR #58 merged 2026-07-12, and the push model was chosen
+/// because pull needed a webhook we cannot register" is spent in its first clause and
+/// durable in its second. Told to retire only when NOTHING durable remains.
+pub const RETIRE_SYS: &str = r#"You are deciding whether ONE fact in an agent's long-term memory has stopped earning its place.
+
+Memory is scored by similarity, so every fact that stays competes with every other for the few slots a search returns. A fact that records finished work crowds out one that would change what an agent does.
+
+RETIRE it only if it is PURE STATUS with nothing durable left:
+- an announcement that something shipped, merged, deployed or passed
+- a task or ticket being done, a branch being landed
+- a one-off incident that was resolved, where the resolution teaches nothing reusable
+- a state that has certainly changed since (a queue depth, a count, who is working on what)
+
+KEEP it if any part of it would still change what a future agent DOES:
+- a gotcha, a trap, a workaround, a thing that broke and why
+- a decision AND its reasoning, even if the work it decided is finished
+- where something lives: a path, a secret, a service, an account
+- a convention, a preference, a policy, a constraint
+- anything about how a system BEHAVES, as opposed to what happened to it once
+
+Many facts are both. "Shipped X (PR #58); we chose the push model because pull needed a webhook we cannot register" is spent in its first half and durable in its second — KEEP it.
+
+When in doubt, KEEP. Removing a fact that was still useful is far worse than leaving one that was not, because nobody will notice the loss until they need it. When in doubt, KEEP.
+
+Return ONLY a JSON array. To retire: [{"why": "<one short line naming what makes it spent>"}]. To keep it: [].
+
+Output the array and NOTHING else — no explanation, no preamble, not the word RETIRE on its own. A reply that argues its case instead of returning the array is read as "keep", so an answer you are SURE about is the one most likely to be thrown away."#;
+
 /// Writes a lesson from failures that recurred across several INDEPENDENT sessions.
 ///
 /// The final clause is the important one: a lesson whose evidence shows no actual fix
@@ -121,6 +157,18 @@ mod tests {
         assert!(LESSON_SYS.contains("TRIGGER"));
         assert!(LESSON_SYS.contains("FAILED"));
         assert!(LESSON_SYS.contains("FIX"));
+    }
+
+    #[test]
+    fn retire_defaults_to_keeping_and_says_so_twice() {
+        // This is the only pass whose mistake DELETES. The bias has to be in the prompt,
+        // not in the reviewer's vigilance — a queue full of plausible retirements is
+        // approved without reading, which is how every review queue fails.
+        assert_eq!(RETIRE_SYS.matches("When in doubt, KEEP").count(), 2);
+        // The distinction the whole pass rests on: a fact can be spent and durable in one
+        // sentence, and dropping that clause turns it into a delete-anything-old pass.
+        assert!(RETIRE_SYS.contains("Many facts are both"));
+        assert!(RETIRE_SYS.contains("decision AND its reasoning"));
     }
 
     #[test]

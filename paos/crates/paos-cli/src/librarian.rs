@@ -124,6 +124,120 @@ fn facts(db: &std::path::Path, dataset: &str, limit: usize, min_chars: Option<us
     out.unwrap_or_default()
 }
 
+/// Old facts in one dataset that no one has recalled recently, sampled at RANDOM.
+///
+/// Random, not oldest-first, and that was learned by measuring: oldest-first judged 36
+/// facts across three brains and proposed nothing, because in a human-curated store the
+/// OLDEST surviving facts are the conventions and gotchas that earned their place. Spent
+/// status accumulates at every age. Deterministic ordering also means a second run re-pays
+/// for the same verdicts and never reaches the rest of the corpus.
+///
+/// `last_used` is in the filter because a fact recalled last week is in use whatever its
+/// age. Facts that already carry a retirement proposal are excluded so batches do not
+/// re-propose what is already sitting in the queue.
+///
+/// This is a SAMPLER, not a sweeper: a "keep" is not recorded anywhere, so running it
+/// twice will re-judge some of the same facts. Recording keeps would mean a third state to
+/// maintain, and the pass is cheap enough to re-run.
+fn stale_candidates(db: &std::path::Path, dataset: &str, limit: usize, min_age_days: usize)
+    -> Vec<lib::upkeep::Fact>
+{
+    let Some(c) = read_only(db) else { return Vec::new() };
+    let out = c
+        .prepare(
+            "SELECT id, text FROM memories \
+             WHERE dataset=?1 AND superseded IS NULL \
+               AND created_ts < date('now', ?2) \
+               AND COALESCE(last_used, created_ts) < date('now', ?2) \
+               AND id NOT IN (SELECT COALESCE(target_data_id, '') FROM memory_proposals \
+                              WHERE kind = 'retire') \
+             ORDER BY RANDOM() LIMIT ?3",
+        )
+        .and_then(|mut st| {
+            st.query_map(
+                rusqlite::params![dataset, format!("-{min_age_days} days"), limit as i64],
+                |r| Ok(lib::upkeep::Fact { id: r.get(0)?, text: r.get(1)? }),
+            )
+            .and_then(|it| it.collect())
+        });
+    out.unwrap_or_default()
+}
+
+/// Propose retiring facts that have stopped earning their place.
+///
+/// QUEUED, never applied — and unlike every other pass here, that is not merely policy.
+/// This is the only pass whose approval REMOVES something, and the only one whose mistake
+/// cannot be caught by reading what it wrote, because it writes nothing. So it is
+/// conservative three times over: the model is told twice to keep when unsure, facts
+/// recalled recently are never even offered, and approval sets `superseded` rather than
+/// deleting, so a wrong call is one UPDATE from being undone.
+fn cmd_retire<F>(args: &[String], db: &std::path::Path, send: &F) -> i32
+where
+    F: Fn(&Request) -> Option<Response>,
+{
+    let dry = flag(args, "--dry-run");
+    let ds = value(args, "--dataset").unwrap_or_else(|| scope_dataset(db, scope_of(args).as_deref()));
+    let min_age = num(args, "--min-age-days", 21);
+    let rows = stale_candidates(db, &ds, num(args, "--limit", 25), min_age);
+    println!("{ds}: {} fact(s) older than {min_age}d and not recently recalled{}",
+             rows.len(), if dry { " [dry-run]" } else { "" });
+    let b = backend(db);
+    let (mut queued, mut unread, mut kept, mut unparsed) = (0usize, 0usize, 0usize, 0usize);
+    for f in &rows {
+        let Some(raw) = lib::draft::complete(lib::prompts::RETIRE_SYS, &f.text, &b) else {
+            unread += 1;
+            continue;
+        };
+        // A "keep" and a model that never understood the question look identical from
+        // outside, and this pass is biased toward keeping — so the broken case hides
+        // inside the safe-looking one. That exact failure shipped once already, in a pass
+        // that reported "4 left alone" because the model had replied asking for the fact.
+        if std::env::var("PAOS_LIBRARIAN_DEBUG").is_ok() {
+            eprintln!("  [debug] {} <- {raw}", f.id.chars().take(8).collect::<String>());
+        }
+        let verdict = lib::draft::parse_candidates(&raw);
+        if verdict.is_empty() {
+            // A reply with no array at all is NOT a keep, and counting it as one is how
+            // this pass would quietly do nothing. Measured: asked about a fact that was
+            // pure status, the model answered "RETIRE" in prose — the most confident
+            // verdicts are the ones most likely to arrive unparseable.
+            if !raw.contains('[') {
+                unparsed += 1;
+            } else {
+                kept += 1;
+            }
+            continue;
+        }
+        let why = verdict[0]
+            .why
+            .clone()
+            .or_else(|| verdict[0].rationale.clone())
+            .unwrap_or_else(|| "spent status".to_string());
+        if dry {
+            println!("  {} — {why}", f.id.chars().take(8).collect::<String>());
+            println!("     · {}", f.text.chars().take(110).collect::<String>());
+            queued += 1;
+            continue;
+        }
+        // No text: a retirement replaces the fact with nothing, which is exactly what
+        // makes it different from every other proposal in the queue.
+        if let Some(line) = queue(send, "retire", &ds, None, None, Some(&f.id), Some(&why),
+                                  "retire") {
+            println!("  {line}");
+            queued += 1;
+        }
+    }
+    if unread > 0 {
+        println!("  ⚠ {unread} unread — the model did not answer");
+    }
+    if unparsed > 0 {
+        println!("  ⚠ {unparsed} unparseable — the model argued instead of answering, and \
+                  those verdicts were LOST, not kept");
+    }
+    println!("  {kept} judged still useful, {queued} proposed for retirement");
+    0
+}
+
 pub fn run<F>(cmd: &str, positional: &[String], args: &[String], db: &std::path::Path,
               send: F) -> i32
 where
@@ -132,6 +246,7 @@ where
     match cmd {
         "tidy" => cmd_tidy(args, db, &send),
         "split" => cmd_split(args, db, &send),
+        "retire" => cmd_retire(args, db, &send),
         "draft" => cmd_draft(positional, args, db, &send),
         "lessons" => cmd_lessons(args, db, &send),
         "dream" => cmd_dream(args, db, &send),

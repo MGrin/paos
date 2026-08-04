@@ -83,6 +83,34 @@ struct Report {
     misses: Vec<String>,
 }
 
+/// Re-order the first-stage candidates with a second, slower model.
+///
+/// Measured motivation: splitting the worst brain into ~23-fact pools and routing each
+/// question perfectly took it from hit@5 3/8 to 8/8. The right fact is nearly always
+/// present and badly ordered, so the win is in ordering a shortlist — and a shortlist is
+/// something a system can actually produce, where an oracle that picks the right
+/// sub-brain is not.
+#[cfg(feature = "bert")]
+fn rerank(e: &dyn Embedder, query: &str, texts: &[String]) -> Vec<usize> {
+    fn cos(a: &[f32], b: &[f32]) -> f32 {
+        let (mut d, mut x, mut y) = (0.0f32, 0.0f32, 0.0f32);
+        for (p, q) in a.iter().zip(b) {
+            d += p * q;
+            x += p * p;
+            y += q * q;
+        }
+        if x <= 0.0 || y <= 0.0 { 0.0 } else { d / (x.sqrt() * y.sqrt()) }
+    }
+    let q = e.embed(query);
+    let mut scored: Vec<(usize, f32)> = texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (i, cos(&q, &e.embed(t))))
+        .collect();
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    scored.into_iter().map(|(i, _)| i).collect()
+}
+
 /// Rank of the correct fact for each case, 0-indexed; `None` is a miss.
 fn ranks(conn: &Connection, e: &dyn Embedder, cases: &[Case], top_k: usize) -> Vec<Option<usize>> {
     cases
@@ -236,6 +264,24 @@ fn main() {
     let n = cases.len();
     println!("  {n} case(s), top-{top_k}, model {}", embedder.id());
 
+    #[cfg(feature = "bert")]
+    if let Some(i) = args.iter().position(|a| a == "--rerank") {
+        let depth: usize = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(30);
+        let second = match BertEmbedder::from_dir(&BertEmbedder::default_dir()) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("rank-bench: bert unavailable ({e})");
+                std::process::exit(1);
+            }
+        };
+        let (h1, hk, mrr) = score_reranked(&conn, embedder, &second, &cases, top_k, depth);
+        println!("\n  rerank top-{depth} with {}", Embedder::id(&second));
+        println!("  hit@1  {h1:>2}/{n}");
+        println!("  hit@{top_k}  {hk:>2}/{n}");
+        println!("  MRR    {mrr:.3}");
+        return;
+    }
+
     if corpus {
         // Diagnosis, not scoring: how much room the embedding has to tell one fact from
         // another in each brain. A high mean pairwise cosine means the corpus is flat and
@@ -379,4 +425,37 @@ mod tests {
         assert_eq!(lexical_overlap("alpha beta", "alpha gamma"), 0.5);
         assert_eq!(lexical_overlap("", "anything"), 0.0);
     }
+}
+
+#[cfg(feature = "bert")]
+/// Two-stage: `first` proposes `depth` candidates, `second` re-orders them, and only the
+/// top `top_k` of that reordering count. Reported separately from `score` because the two
+/// stages have different costs and conflating them hides which one is failing.
+fn score_reranked(
+    conn: &Connection,
+    first: &dyn Embedder,
+    second: &dyn Embedder,
+    cases: &[Case],
+    top_k: usize,
+    depth: usize,
+) -> (usize, usize, f64) {
+    let (mut hit1, mut hitk, mut mrr) = (0usize, 0usize, 0.0f64);
+    for c in cases {
+        let hits = recall(conn, first, &[c.dataset.clone()], &c.question, depth).unwrap_or_default();
+        let texts: Vec<String> = hits.iter().map(|h| h.memory.text.clone()).collect();
+        let order = rerank(second, &c.question, &texts);
+        let needle = c.needle.to_lowercase();
+        if let Some(p) = order
+            .iter()
+            .take(top_k)
+            .position(|&i| texts[i].to_lowercase().contains(&needle))
+        {
+            if p == 0 {
+                hit1 += 1;
+            }
+            hitk += 1;
+            mrr += 1.0 / (p + 1) as f64;
+        }
+    }
+    (hit1, hitk, mrr / cases.len().max(1) as f64)
 }

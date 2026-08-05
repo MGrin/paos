@@ -121,12 +121,27 @@ pub fn post(
     //
     // Never `operator`: the human is not a fleet session, and putting them on the roster
     // would make them a candidate for peer-directed traffic.
+    //
+    // LIVE senders only. Spool entries replay with their ORIGINAL timestamp, sometimes
+    // days later, so an unguarded join resurrects the membership of a session that has
+    // since ended — teardown deletes the row and the drain puts it straight back. Nine
+    // ghosts appeared in `lobby` that way, each with `joined_ts` equal to its session's
+    // `ended_ts` to the second.
     if sender != "operator" {
-        tx.execute(
-            "INSERT OR IGNORE INTO members(room, name, joined_ts, last_seen) \
-             VALUES(?1, ?2, ?3, ?3)",
-            params![room, sender, ts],
-        )?;
+        let live: bool = tx
+            .query_row(
+                "SELECT 1 FROM sessions WHERE name=?1 AND ended_ts IS NULL",
+                [sender],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if live {
+            tx.execute(
+                "INSERT OR IGNORE INTO members(room, name, joined_ts, last_seen) \
+                 VALUES(?1, ?2, ?3, ?3)",
+                params![room, sender, ts],
+            )?;
+        }
     }
     let seq: i64 = tx.query_row(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE room = ?1",

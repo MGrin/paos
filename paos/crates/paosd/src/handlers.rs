@@ -880,6 +880,31 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
+    fn a_send_from_an_ENDED_session_does_not_resurrect_its_membership() {
+        // Spool entries replay with their original timestamp, sometimes days later. Without
+        // this guard the drain re-creates memberships that teardown had just deleted —
+        // nine appeared in `lobby`, each with joined_ts equal to its session's ended_ts.
+        let d = daemon_with(&[]);
+        {
+            let mut g = d.conn.lock().unwrap();
+            g.execute(
+                "INSERT INTO sessions(name, session_id, ended_ts) \
+                 VALUES('gone-badger','gone-badger','2026-08-04T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            paos_bus::post(&mut g, "lobby", "gone-badger", "@all", "bye",
+                           "2026-08-04T00:00:00Z", false, false)
+                .unwrap();
+        }
+        let g = d.conn.lock().unwrap();
+        let n: i64 = g
+            .query_row("SELECT COUNT(*) FROM members WHERE name='gone-badger'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "an ended session must not be re-joined by its own backlog");
+    }
+
+    #[test]
     fn a_spooled_send_also_makes_the_sender_reachable() {
         // The path a SANDBOXED session takes, which is nearly all of them: it cannot reach
         // the socket, so the send is spooled and replayed through `apply_bus_op` straight
@@ -888,6 +913,8 @@ mod tests {
         let d = daemon_with(&[]);
         {
             let mut g = d.conn.lock().unwrap();
+            g.execute("INSERT INTO sessions(name, session_id) VALUES('swift-otter','swift-otter')",
+                      []).unwrap();
             paos_bus::post(&mut g, "spooled-room", "swift-otter", "@all", "hi",
                            "2026-08-05T00:00:00Z", false, false)
                 .unwrap();
@@ -911,6 +938,9 @@ mod tests {
         // posting into it, and ZERO members — every message the operator typed there went
         // into an empty room, and they fell back to lobby.
         let d = daemon_with(&[]);
+        d.conn.lock().unwrap().execute(
+            "INSERT INTO sessions(name, session_id) VALUES('swift-otter','swift-otter')", [])
+            .unwrap();
         let r = dispatch(&d, Request::Send {
             room: "new-room".into(),
             sender: "swift-otter".into(),

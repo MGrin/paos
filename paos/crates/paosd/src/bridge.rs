@@ -1546,6 +1546,51 @@ fn reconcile_topics(conn: &Arc<Mutex<Connection>>, cfg: &Config) {
             eprintln!("paosd: room {room} has live readers — gave it a topic");
         }
     }
+
+    // And the other direction: a CLOSED room whose topic is still open. Nothing in this
+    // workspace ever closed a topic — `closed_ts` was only cleared, never set — so the
+    // group grew one topic per room ever opened and the operator had to read past all of
+    // them to find the live ones.
+    //
+    // The list is COLLECTED and the guard DROPPED before the loop. Writing
+    // `for x in stale_topics(&lock(conn))` keeps the temporary guard alive for the whole
+    // loop, and the body locks again — a self-deadlock on a std Mutex that wedges the
+    // bridge thread silently. The socket thread keeps answering `ping`, so the daemon
+    // looks healthy while Telegram has stopped entirely. It did exactly that here, and the
+    // symptom was a sweep that logged nothing at all rather than an error.
+    let stale = { stale_topics(&lock(conn)) };
+    for (room, tid) in stale {
+        match telegram::close_topic(cfg, tid) {
+            // Record ONLY on success, so a failed call is retried next tick rather than
+            // being remembered as done.
+            Ok(_) => {
+                let _ = lock(conn).execute(
+                    "UPDATE tg_topics SET closed_ts=?2 WHERE kind='room' AND key=?1",
+                    rusqlite::params![room, now_iso()],
+                );
+                eprintln!("paosd: room {room} is closed — closed its topic {tid}");
+            }
+            Err(e) => eprintln!("paosd: could not close topic {tid} for {room}: {e}"),
+        }
+    }
+}
+
+/// Open topics whose room is closed. The inverse of `rooms_needing_topics`.
+///
+/// `questions` is excluded because it is a pseudo-room: it has no row in `rooms` and
+/// exists only to give escalations a topic. Treating "no room row" as "closed" would shut
+/// the one topic the operator answers questions in.
+fn stale_topics(conn: &Connection) -> Vec<(String, i64)> {
+    conn.prepare(
+        "SELECT t.key, t.thread_id FROM tg_topics t \
+         JOIN rooms r ON r.room = t.key \
+         WHERE t.kind='room' AND t.closed_ts IS NULL AND r.closed_ts IS NOT NULL",
+    )
+    .and_then(|mut s| {
+        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|it| it.filter_map(Result::ok).collect())
+    })
+    .unwrap_or_default()
 }
 
 fn supervise_and_alert(
@@ -1988,6 +2033,43 @@ mod tests {
         let c = db();
         seed_room(&c, "qbo-queries-sync", "swift-otter", true, None);
         assert_eq!(rooms_needing_topics(&c), vec!["qbo-queries-sync".to_string()]);
+    }
+
+    #[test]
+    fn a_closed_rooms_topic_is_nominated_for_closing() {
+        // Nothing in this workspace ever closed a topic, so the group grew one per room
+        // ever opened. Four were live for closed rooms when this was written.
+        let c = db();
+        seed_room(&c, "motion-fleet", "old-badger", false, Some(164));
+        // The `rooms` row explicitly: `seed_room` seeds sessions, members and topics, and
+        // an UPDATE against a row that does not exist affects nothing and asserts nothing.
+        c.execute(
+            "INSERT INTO rooms(room, created_ts, closed_ts) \
+             VALUES('motion-fleet','2026-07-01T00:00:00Z','2026-08-05T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(stale_topics(&c), vec![("motion-fleet".to_string(), 164)]);
+    }
+
+    #[test]
+    fn the_escalation_topic_is_never_closed_by_the_sweep() {
+        // `questions` is a PSEUDO-room: it has no row in `rooms` at all. Treating a
+        // missing room row as "closed" would shut the one topic the operator answers
+        // questions in — the exact opposite of the point.
+        let c = db();
+        c.execute("INSERT INTO tg_topics(kind, key, thread_id, created_ts) \
+                   VALUES('room','questions',498,'2026-08-01T00:00:00Z')", []).unwrap();
+        assert!(stale_topics(&c).is_empty());
+    }
+
+    #[test]
+    fn an_open_rooms_topic_is_left_alone() {
+        let c = db();
+        seed_room(&c, "ad-hocs", "swift-otter", true, Some(195));
+        c.execute("INSERT INTO rooms(room, created_ts) VALUES('ad-hocs','2026-07-01T00:00:00Z')",
+                  []).unwrap();
+        assert!(stale_topics(&c).is_empty());
     }
 
     #[test]

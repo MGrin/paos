@@ -451,6 +451,19 @@ pub fn reopen_topic(cfg: &Config, thread_id: i64) -> Result<String, String> {
          &[("chat_id", &cfg.chat_id), ("message_thread_id", &tid)], 10)
 }
 
+/// Close a forum topic. It stays readable and searchable; it just stops inviting replies.
+///
+/// The counterpart to `reopen_topic`, and it did not exist — so `tg_topics.closed_ts` was
+/// only ever CLEARED, never set, by any code in this workspace. Rooms closed and their
+/// topics did not, so the group accumulated one topic per room ever opened. Four topics
+/// for closed rooms were live in the operator's group when this was written, which is a
+/// direct contributor to their report that Telegram "brings a lot of cognitive load".
+pub fn close_topic(cfg: &Config, thread_id: i64) -> Result<String, String> {
+    let tid = thread_id.to_string();
+    call(cfg, "closeForumTopic",
+         &[("chat_id", &cfg.chat_id), ("message_thread_id", &tid)], 10)
+}
+
 /// Retitle an existing forum topic.
 ///
 /// A topic's name is set once at creation and then never revisited, so a room that later

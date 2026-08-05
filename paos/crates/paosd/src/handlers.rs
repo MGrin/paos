@@ -879,6 +879,78 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    #[test]
+    fn a_spooled_send_also_makes_the_sender_reachable() {
+        // The path a SANDBOXED session takes, which is nearly all of them: it cannot reach
+        // the socket, so the send is spooled and replayed through `apply_bus_op` straight
+        // into `paos_bus::post`. The first version of this fix sat in the handler, passed
+        // its unit test, and did nothing in production.
+        let d = daemon_with(&[]);
+        {
+            let mut g = d.conn.lock().unwrap();
+            paos_bus::post(&mut g, "spooled-room", "swift-otter", "@all", "hi",
+                           "2026-08-05T00:00:00Z", false, false)
+                .unwrap();
+        }
+        let g = d.conn.lock().unwrap();
+        let n: i64 = g
+            .query_row(
+                "SELECT COUNT(*) FROM members WHERE room='spooled-room' AND name='swift-otter'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the spool path must join too, or the fix reaches almost nobody");
+    }
+
+    #[test]
+    fn posting_to_a_room_makes_the_sender_reachable_in_it() {
+        // THE reported bug, and it is the reply path that breaks: membership is what
+        // delivery uses, so a session could talk into a room forever while being
+        // unreachable there. Measured live, `ad-hocs` had a Telegram topic, sessions
+        // posting into it, and ZERO members — every message the operator typed there went
+        // into an empty room, and they fell back to lobby.
+        let d = daemon_with(&[]);
+        let r = dispatch(&d, Request::Send {
+            room: "new-room".into(),
+            sender: "swift-otter".into(),
+            target: "@all".into(),
+            text: "working on it".into(),
+            urgent: false,
+            ambient: false,
+        });
+        assert!(matches!(r, Response::Ok { .. }), "{r:?}");
+        let g = d.conn.lock().unwrap();
+        let n: i64 = g
+            .query_row(
+                "SELECT COUNT(*) FROM members WHERE room='new-room' AND name='swift-otter'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the sender must be a member of the room it posted to");
+    }
+
+    #[test]
+    fn the_operator_does_not_join_rooms_by_typing_in_them() {
+        // The human is not a fleet session. Adding them to `members` would put them on
+        // the roster as a peer and make them a candidate for peer-directed traffic.
+        let d = daemon_with(&[]);
+        dispatch(&d, Request::Send {
+            room: "lobby".into(),
+            sender: "operator".into(),
+            target: "@all".into(),
+            text: "status?".into(),
+            urgent: false,
+            ambient: false,
+        });
+        let g = d.conn.lock().unwrap();
+        let n: i64 = g
+            .query_row("SELECT COUNT(*) FROM members WHERE name='operator'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
     fn daemon_with(rows: &[(&str, &str, Option<&str>)]) -> Daemon {
         let conn = paos_store::open_in_memory().unwrap();
         for (name, sid, ended) in rows {

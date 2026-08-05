@@ -1514,6 +1514,40 @@ fn accounts_exhaustion() -> Option<String> {
     op::accounts::exhaustion(&accounts, &cfg, 0, now_epoch())
 }
 
+/// Rooms with a live session and no topic — the selection, separated from the network
+/// call so it can be tested without Telegram.
+fn rooms_needing_topics(conn: &Connection) -> Vec<String> {
+    rooms_with_readers(conn)
+        .into_iter()
+        .map(|(r, _)| r)
+        .filter(|r| {
+            conn.query_row("SELECT 1 FROM tg_topics WHERE kind='room' AND key=?1", [r], |_| Ok(()))
+                .is_err()
+        })
+        .collect()
+}
+
+/// Create Telegram topics for rooms that have a live session and no topic yet.
+///
+/// Deliberately silent about rooms it skips: this runs on a timer, and a line per skipped
+/// room every cycle is how a log stops being read. It logs what it CREATES, which is rare
+/// and is the thing worth knowing.
+fn reconcile_topics(conn: &Arc<Mutex<Connection>>, cfg: &Config) {
+    if !cfg.is_group {
+        return;
+    }
+    let rooms = { rooms_needing_topics(&lock(conn)) };
+    for room in rooms {
+        // One at a time, each taking and releasing the lock: `topic_for` makes a network
+        // call, and holding the single writer across it would stall every session's
+        // memory write behind Telegram's latency.
+        let g = lock(conn);
+        if topic_for(&g, cfg, &room).is_some() {
+            eprintln!("paosd: room {room} has live readers — gave it a topic");
+        }
+    }
+}
+
 fn supervise_and_alert(
     conn: &Arc<Mutex<Connection>>,
     cfg: &Config,
@@ -1524,6 +1558,20 @@ fn supervise_and_alert(
         return;
     }
     *last = std::time::Instant::now();
+
+    // Give every room a live session is IN a topic to be reached in.
+    //
+    // Topics used to appear only as a side effect of mirroring: `topic_for` runs when a
+    // message is addressed to the operator, so a room whose sessions only talked to each
+    // other stayed invisible in the group. Measured at the moment this was written, four
+    // live rooms had no topic — including `qbo-queries-sync` with FOUR live sessions in
+    // it, which the operator had no way to type into at all. Their words: "new bus rooms
+    // are not created as telegram group topics".
+    //
+    // Membership, not existence, is the trigger. Creating a topic per row in `rooms`
+    // would fill the group with the archaeology of every room ever opened; a room with a
+    // live reader is exactly a room the operator might need.
+    reconcile_topics(conn, cfg);
 
     // Liveness must work ACROSS implementations while Python still owns the bus CLI.
     // A Python listener is invisible to this daemon's push registry, so asking only the
@@ -1906,6 +1954,60 @@ mod tests {
             operator_username: Some("example_operator".into()),
             allowed_user_id: Some(1),
         }
+    }
+
+    /// A live session in a room, and optionally a topic for that room.
+    fn seed_room(c: &Connection, room: &str, session: &str, live: bool, topic: Option<i64>) {
+        c.execute(
+            "INSERT OR IGNORE INTO sessions(name, session_id, ended_ts) VALUES(?1, ?1, ?2)",
+            rusqlite::params![session, if live { None } else { Some("2026-08-01T00:00:00Z") }],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO members(room, name, joined_ts, last_seen) \
+             VALUES(?1, ?2, '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            rusqlite::params![room, session],
+        )
+        .unwrap();
+        if let Some(t) = topic {
+            c.execute(
+                "INSERT OR IGNORE INTO tg_topics(kind, key, thread_id, created_ts) \
+                 VALUES('room', ?1, ?2, '2026-08-01T00:00:00Z')",
+                rusqlite::params![room, t],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_room_with_a_live_session_and_no_topic_is_nominated() {
+        // THE reported bug. Topics only ever appeared as a side effect of mirroring a
+        // message to the operator, so a room whose sessions only talked to each other was
+        // invisible in the group — measured live, `qbo-queries-sync` had four live
+        // sessions and no topic, and the operator could not type into it at all.
+        let c = db();
+        seed_room(&c, "qbo-queries-sync", "swift-otter", true, None);
+        assert_eq!(rooms_needing_topics(&c), vec!["qbo-queries-sync".to_string()]);
+    }
+
+    #[test]
+    fn a_room_that_already_has_a_topic_is_not_nominated_again() {
+        // Nominating it twice would create a SECOND Telegram topic with the same name and
+        // orphan the first — the failure that once left three "ad-hocs" topics in the
+        // group, undiscoverable because bots cannot list topics.
+        let c = db();
+        seed_room(&c, "ad-hocs", "swift-otter", true, Some(195));
+        assert!(rooms_needing_topics(&c).is_empty());
+    }
+
+    #[test]
+    fn a_room_whose_sessions_have_all_ended_is_not_nominated() {
+        // Membership outlives the session — the reap fires when the session ROW goes, and
+        // ending one only sets `ended_ts`. Without the liveness join this would create a
+        // topic for every room ever used, which is the archaeology of the whole fleet.
+        let c = db();
+        seed_room(&c, "motion-fleet", "old-badger", false, None);
+        assert!(rooms_needing_topics(&c).is_empty());
     }
 
     fn last_msg(c: &Connection) -> (String, String, String, i64) {

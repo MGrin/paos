@@ -134,6 +134,9 @@ fn apply_bus_op(conn: &Mutex<Connection>, op: &str, v: &serde_json::Value)
                 t => t,
             };
             let mut g = lock(conn);
+            // This is the path almost every session actually takes — a sandboxed agent
+            // cannot reach the unix socket, so its sends arrive here. Anything that must
+            // happen on a send belongs inside `post`, not beside one of its two callers.
             paos_bus::post(&mut g, room, sender, target, text, &now, b("urgent"), b("ambient"))?;
             Ok(true)
         }

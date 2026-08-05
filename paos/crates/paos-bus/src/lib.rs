@@ -106,6 +106,28 @@ pub fn post(
         "INSERT OR IGNORE INTO rooms(room, created_ts) VALUES(?1, ?2)",
         params![room, ts],
     )?;
+    // POSTING JOINS, and it belongs HERE rather than in the request handler because there
+    // are two write paths and the handler is the one almost nobody takes: a sandboxed
+    // session cannot reach the unix socket, so its sends are SPOOLED and replayed through
+    // `apply_bus_op`, which calls this function directly. Fixing only the handler was
+    // tested green by a unit test and changed nothing in production — the live check
+    // afterwards still showed zero members.
+    //
+    // Why join at all: membership is what delivery uses, so a session could talk into a
+    // room forever while being unreachable in it. Measured on the live store, `ad-hocs`
+    // had a Telegram topic, several sessions posting into it, and ZERO members — every
+    // message the operator typed there landed in an empty room. Their words: "sessions
+    // write to the ad-hocs room but are not reachable through it".
+    //
+    // Never `operator`: the human is not a fleet session, and putting them on the roster
+    // would make them a candidate for peer-directed traffic.
+    if sender != "operator" {
+        tx.execute(
+            "INSERT OR IGNORE INTO members(room, name, joined_ts, last_seen) \
+             VALUES(?1, ?2, ?3, ?3)",
+            params![room, sender, ts],
+        )?;
+    }
     let seq: i64 = tx.query_row(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE room = ?1",
         [room],

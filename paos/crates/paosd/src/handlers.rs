@@ -718,10 +718,29 @@ fn reachable(daemon: &Daemon, name: &str) -> Response {
     let prior = paos_presence::prior_rooms(&g, name).unwrap_or_default();
     let mut restored = Vec::new();
     for room in prior.iter() {
-        if !joined.contains(room) {
-            if paos_presence::join(&g, room, name, &now).is_ok() {
-                restored.push(room.clone());
-            }
+        if joined.contains(room) {
+            continue;
+        }
+        // NEVER re-open a room somebody closed. Restoring a session's prior rooms is what
+        // keeps a restart from going deaf, but it treated "closed" as "dropped" — so the
+        // end-of-turn reflex resurrected closed rooms, and a room closed on purpose came
+        // back the moment any former member ran `reachable`. Observed within twenty
+        // minutes of a cleanup: `paos-oss` was closed, then restored, by this line.
+        //
+        // `join` re-creates the `rooms` row if it is missing, so the check has to happen
+        // HERE rather than inside it — by the time join runs, the evidence is gone.
+        let closed: bool = g
+            .query_row(
+                "SELECT 1 FROM rooms WHERE room=?1 AND closed_ts IS NOT NULL",
+                [room],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if closed {
+            continue;
+        }
+        if paos_presence::join(&g, room, name, &now).is_ok() {
+            restored.push(room.clone());
         }
     }
     let rooms = paos_bus::joined_rooms(&g, name).unwrap_or_default();
@@ -878,6 +897,35 @@ fn whoami(conn: &Connection, session_id: Option<&str>) -> Response {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn reachable_does_not_resurrect_a_room_that_was_closed_on_purpose() {
+        // The end-of-turn reflex restores a session's prior rooms so a restart does not go
+        // deaf — but it read "closed" as "dropped". A cleanup therefore lasted only until
+        // any former member ran `reachable`: `paos-oss` was closed and back within twenty
+        // minutes, by this exact path.
+        let d = daemon_with(&[]);
+        {
+            let g = d.conn.lock().unwrap();
+            g.execute("INSERT INTO sessions(name, session_id) VALUES('swift-otter','swift-otter')",
+                      []).unwrap();
+            g.execute("INSERT INTO rooms(room, created_ts, closed_ts) \
+                       VALUES('gone-room','2026-08-01T00:00:00Z','2026-08-05T00:00:00Z')",
+                      []).unwrap();
+            // `room_history` is what `prior_rooms` reads — NOT `members`. My first
+            // version of this test seeded `members` and deleted it, which left
+            // `prior_rooms` empty; the test then passed with the guard removed, proving
+            // nothing. Verified by mutation afterwards, which is the only reason I know.
+            g.execute("INSERT INTO room_history(room, name) VALUES('gone-room','swift-otter')",
+                      []).unwrap();
+        }
+        let _ = reachable(&d, "swift-otter");
+        let g = d.conn.lock().unwrap();
+        let n: i64 = g
+            .query_row("SELECT COUNT(*) FROM members WHERE room='gone-room'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "a closed room must stay closed");
+    }
 
     #[test]
     fn a_send_from_an_ENDED_session_does_not_resurrect_its_membership() {

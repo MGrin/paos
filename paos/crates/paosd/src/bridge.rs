@@ -1836,12 +1836,35 @@ fn supervise_and_alert(
 /// This table was never drained by the Rust bridge, so every `say` a session made
 /// vanished into SQLite with no error — a silent black hole on the one path a session
 /// has to volunteer information to the human.
+/// The topic a session's unsolicited message belongs in: its own work room.
+///
+/// `lobby` is excluded because every session is in it — routing there would put every
+/// session's `say` in General, which is the same failure with a different topic. A session
+/// in several rooms, or in none but lobby, falls back to `ad-hocs`: with no single room to
+/// point at, the general topic is honest and a guess is not.
+fn session_topic(conn: &Connection, cfg: &Config, session: &str) -> Option<i64> {
+    let rooms: Vec<String> = conn
+        .prepare("SELECT room FROM members WHERE name=?1 AND room <> 'lobby' ORDER BY room")
+        .and_then(|mut s| {
+            s.query_map([session], |r| r.get(0)).map(|it| it.filter_map(Result::ok).collect())
+        })
+        .unwrap_or_default();
+    match rooms.as_slice() {
+        [one] => topic_for(conn, cfg, one),
+        _ => topic_for(conn, cfg, "ad-hocs"),
+    }
+}
+
 fn drain_outbox(conn: &Arc<Mutex<Connection>>, cfg: &Config) {
     let rows = { let g = lock(conn); op::unsent_outbox(&g).unwrap_or_default() };
     for (id, session, text) in rows {
         let body = telegram::neutralize_mentions(
             &format!("{text}\n\n— {session}"), cfg.operator_username.as_deref());
-        let tid = { let g = lock(conn); topic_for(&g, cfg, "ad-hocs") };
+        // The SENDER'S OWN room, not a fixed one. Every `paos operator say` landed in
+        // `ad-hocs` regardless of which repo the session worked in, so the operator saw
+        // sessions from four repos all talking in one topic and read it as sessions
+        // choosing the wrong room. They were not choosing anything — this line was.
+        let tid = { let g = lock(conn); session_topic(&g, cfg, &session) };
         match telegram::send(cfg, &body, false, tid) {
             Ok(mid) => {
                 let g = lock(conn);
@@ -2033,6 +2056,38 @@ mod tests {
         let c = db();
         seed_room(&c, "qbo-queries-sync", "swift-otter", true, None);
         assert_eq!(rooms_needing_topics(&c), vec!["qbo-queries-sync".to_string()]);
+    }
+
+    #[test]
+    fn a_session_says_things_in_its_own_rooms_topic() {
+        // Every `paos operator say` used to land in `ad-hocs` whatever repo the session
+        // worked in, so four repos' sessions appeared to be talking in one topic. The
+        // operator read that as sessions choosing the wrong room; the router was choosing
+        // for them.
+        let c = db();
+        seed_room(&c, "qbo-queries-sync", "dapper-tapir-5", true, Some(1357));
+        seed_room(&c, "lobby", "dapper-tapir-5", true, Some(10));
+        assert_eq!(session_topic(&c, &cfg(), "dapper-tapir-5"), Some(1357));
+    }
+
+    #[test]
+    fn a_session_with_only_lobby_falls_back_rather_than_shouting_in_general() {
+        // Every session is in lobby, so routing there would be the same failure wearing a
+        // different topic — General instead of ad-hocs.
+        let c = db();
+        seed_room(&c, "lobby", "lone-otter", true, Some(10));
+        seed_room(&c, "ad-hocs", "someone-else", true, Some(195));
+        assert_eq!(session_topic(&c, &cfg(), "lone-otter"), Some(195));
+    }
+
+    #[test]
+    fn a_session_in_two_rooms_is_not_guessed_at() {
+        // With no single room to point at, the general topic is honest and a guess is not.
+        let c = db();
+        seed_room(&c, "room-a", "busy-otter", true, Some(11));
+        seed_room(&c, "room-b", "busy-otter", true, Some(12));
+        seed_room(&c, "ad-hocs", "someone-else", true, Some(195));
+        assert_eq!(session_topic(&c, &cfg(), "busy-otter"), Some(195));
     }
 
     #[test]

@@ -142,9 +142,13 @@ jobs:
           ./target/release/paos --help >/dev/null
           # And a release whose binary reports a different version than the tag is a
           # support question waiting to happen.
-          ./target/release/paos version | grep -q "${{ needs.version.outputs.bare }}" \
+          #
+          # `paosd --version` and NOT `paos version`: the CLI verb is a round trip to the
+          # daemon, so on a runner with no daemon it exits 69 with the sandbox advice
+          # meant for agents. The daemon binary answers this one locally.
+          ./target/release/paosd --version | grep -q "${{ needs.version.outputs.bare }}" \
             || { echo "binary does not report ${{ needs.version.outputs.bare }}:"; \
-                 ./target/release/paos version; exit 1; }
+                 ./target/release/paosd --version; exit 1; }
 
       - name: Package
         working-directory: paos

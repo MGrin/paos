@@ -1818,17 +1818,41 @@ fn supervise_and_alert(
             .unwrap_or_default()
     };
     for name in &deaf {
+        // TRY THE REPAIR BEFORE PAGING A HUMAN. A wake is an urgent message addressed to
+        // the session, and it is exactly what a peer does by hand to revive a deaf one —
+        // twice today, each time back inside a minute. The operator was being told about a
+        // fault that anything on this machine could fix, which is a notification wearing
+        // the costume of an alert. Their words: "What is this? Why do I get it? Can we get
+        // rid of it?"
+        //
+        // FIRST pass wakes, LATER passes page. If the wake works the operator never hears
+        // about it; if it does not, they are told AND told that it was already tried, so
+        // the message carries a fact they cannot get any other way.
+        if alerted.insert(format!("woke:{name}")) {
+            let mut g = lock(conn);
+            let _ = paos_bus::post(&mut g, "lobby", "paosd", &format!("@{name}"),
+                                   "you are flagged DEAF — arm a listener                                     (`paos bus wait-joined`, background)",
+                                   &now_iso(), true, false);
+            eprintln!("paosd: {name} is deaf — sent a wake before paging");
+            continue;
+        }
         if alerted.insert(format!("deaf:{name}")) {
             // The row was already written above the gate; this is only the page.
             let tid = { let g = lock(conn); topic_for(&g, cfg, "ad-hocs") };
             let _ = telegram::send(cfg, &format!(
-                "⚠ session {name} is DEAF — it is in rooms but nothing is listening, so \
-                 messages addressed to it are being ignored."), false, tid);
+                "⚠ {name} is DEAF and did not come back after a wake — nothing is \
+                 listening, so messages to it are ignored. It may need restarting."),
+                false, tid);
         }
     }
-    let live: std::collections::HashSet<String> =
-        deaf.iter().map(|n| format!("deaf:{n}")).collect();
-    alerted.retain(|k| !k.starts_with("deaf:") || live.contains(k));
+    // Clear BOTH keys when a session stops being deaf, or it could never be woken again:
+    // a session that goes deaf, is woken, recovers, and goes deaf a day later would find
+    // its `woke:` key still set and get paged straight to the operator.
+    let live: std::collections::HashSet<String> = deaf
+        .iter()
+        .flat_map(|n| [format!("deaf:{n}"), format!("woke:{n}")])
+        .collect();
+    alerted.retain(|k| (!k.starts_with("deaf:") && !k.starts_with("woke:")) || live.contains(k));
 }
 
 /// Deliver queued `paos operator say` messages.

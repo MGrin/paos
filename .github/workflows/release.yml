@@ -71,13 +71,23 @@ jobs:
           echo "next release: $next (previous: ${latest:-none})"
 
       - name: Tag it
+        # The commit message arrives through the ENVIRONMENT, never interpolated into the
+        # script. `${{ github.event.head_commit.message }}` inside a `run:` block is
+        # substituted as TEXT before bash sees it, so a multi-line message with backticks
+        # is executed as shell — which is exactly what happened on the first run of this
+        # workflow: the commit body ran as commands and the job died with "too many
+        # arguments". It is also the classic Actions script-injection hole, and the fact
+        # that only the maintainer can push here makes it a latent one rather than a safe
+        # one.
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+          MSG: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.next.outputs.tag }}" \
-                  -m "${{ steps.next.outputs.tag }} — ${{ github.event.head_commit.message }}"
-          git push origin "${{ steps.next.outputs.tag }}"
+          git tag -a "$TAG" -m "$TAG"$'\n\n'"$MSG"
+          git push origin "$TAG"
 
   build:
     needs: version

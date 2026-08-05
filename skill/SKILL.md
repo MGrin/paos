@@ -1,6 +1,6 @@
 ---
 name: paos
-version: 46
+version: 47
 description: Personal Agentic OS for this machine — one skill for long-term memory (paos memory, a local scoped vector store), the inter-session peer bus (paos bus), the operator channel to reach the human over Telegram (paos operator), daily standup briefs split work vs personal (paos standup), and a shared work queue with a kanban board (paos task). Backed by the `paos` CLI plus the `paosd` daemon (SQLite, no MCP, no cloud).
 ---
 
@@ -269,6 +269,13 @@ doing, not by name:
 ### When to message — and when not
 
 The bus costs tokens on both sides. Two disciplines:
+
+**KEEP IT SHORT — the operator reads this on a phone, and it is now ENFORCED.** Messages
+to `@operator` are trimmed to ~500 characters on delivery, cut at a sentence end, with a
+pointer to the room for the rest. This exists because asking was not enough: measured over
+one day, 56 messages to the operator averaged **1,021 characters** and 44 of them ran past
+600, while `paos operator say` averaged **1,545**. Lead with the decision or the ask; put
+the reasoning in the room, where it is read on a laptop if it is read at all.
 
 **Be terse, and only message when it changes what a peer does.**
 - Send a message ONLY when it changes what the other session does. Silence means
@@ -609,4 +616,5 @@ third. One place cannot drift.
 - 44: the room you send from IS the Telegram topic your operator reads it in (lobby = General) — address them from the room the work lives in; and `@operator` in the body with `--to @all` reaches NO human, only `--to` is routed
 - 46: `paos task` — a shared work queue with a kanban board; tasks hold short-term work state, memory holds facts
 - 45: rooms guidance restructured into ONE decision — "which room does this message go in?" — answered before every send; joining/creating split out, and `--kind`/`--repos` explained by what they cost when omitted (lifetime, and the topic title nobody can attribute)
+- 47: messages to the operator are TRIMMED to ~500 chars on delivery — write short
 <!-- changelog:end -->

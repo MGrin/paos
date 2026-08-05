@@ -1,7 +1,7 @@
 name: release
 
-# Builds the single-binary paos + paosd for macOS ARM and Linux x86-64 and publishes them
-# to a GitHub Release. This is the whole distribution story, and it is free:
+# Every push to main becomes a release. Builds the single-binary paos + paosd for macOS
+# ARM and Linux x86-64 and publishes them, and this is the whole distribution story:
 #   * rustc auto-applies an ad-hoc signature on arm64 (flags=0x20002 adhoc,linker-signed)
 #   * an ad-hoc-signed binary runs fine — the SIGKILL failure mode needs ad-hoc PLUS
 #     com.apple.quarantine
@@ -11,17 +11,76 @@ name: release
 # Linux is built on the OLDEST supported runner on purpose: a glibc binary runs on any
 # distro with that version or newer, so building on the newest runner would silently
 # narrow the audience to people running this year's distro.
+#
+# WHY ON PUSH RATHER THAN ON A TAG. Tagging by hand meant the published release drifted
+# behind what the maintainer was actually running: v0.3.0 sat SEVEN commits behind main
+# while every one of those commits was deployed locally. Anyone downloading a release got
+# software the author had already moved past, and nothing said so.
+#
+# The tag is created by this workflow, not before it. A tag push does NOT match
+# `branches: [main]`, so tagging from inside cannot re-trigger the run — the loop that
+# self-tagging workflows usually create is closed by the trigger, not by a guard.
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  # Two pushes in quick succession would otherwise race to compute the same next version
+  # from the same latest tag, and the second would fail to create a tag that now exists.
+  # Queue them instead of cancelling: every commit on main is meant to get a release, and
+  # `cancel-in-progress` would silently skip one.
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+      # Without the leading `v`, because every display site already writes one and
+      # `paosd vv0.3.1` is what happens when both do.
+      bare: ${{ steps.next.outputs.bare }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags are the version history, and a shallow clone has none — without this the
+          # next version is computed from an empty list on every run and every release is
+          # v0.0.1.
+          fetch-depth: 0
+
+      - name: Next version
+        id: next
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+          # No tags at all is a real state (a fresh fork), not an error.
+          if [ -z "$latest" ]; then
+            next="v0.0.1"
+          else
+            major_minor="${latest%.*}"
+            patch="${latest##*.}"
+            next="${major_minor}.$((patch + 1))"
+          fi
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "bare=${next#v}" >> "$GITHUB_OUTPUT"
+          echo "next release: $next (previous: ${latest:-none})"
+
+      - name: Tag it
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.next.outputs.tag }}" \
+                  -m "${{ steps.next.outputs.tag }} — ${{ github.event.head_commit.message }}"
+          git push origin "${{ steps.next.outputs.tag }}"
+
   build:
+    needs: version
     strategy:
       # One platform failing must not delete the other's artifact — a macOS-only release
       # is still a release, and the log should say which half broke.
@@ -45,6 +104,12 @@ jobs:
 
       - name: Build release
         working-directory: paos
+        # The version the binary REPORTS comes from the tag being cut, not from
+        # Cargo.toml. Every release before this one shipped a binary saying v0.1.0,
+        # including the one tagged v0.3.0 — `paos version` was answering a question about
+        # the crate manifest while the operator was asking about the release.
+        env:
+          PAOS_RELEASE_VERSION: ${{ needs.version.outputs.bare }}
         run: cargo build --release --locked
 
       - name: Verify the binaries are ad-hoc signed
@@ -57,7 +122,7 @@ jobs:
               || { echo "$b is not ad-hoc signed"; exit 1; }
           done
 
-      - name: The binaries must actually run
+      - name: The binaries must actually run, and report the version being released
         working-directory: paos
         run: |
           set -euo pipefail
@@ -65,6 +130,11 @@ jobs:
           # caught paos not linking on Linux at all — `__error` is macOS-only, glibc wants
           # `__errno_location` — which was found by hand in a container, not by CI.
           ./target/release/paos --help >/dev/null
+          # And a release whose binary reports a different version than the tag is a
+          # support question waiting to happen.
+          ./target/release/paos version | grep -q "${{ needs.version.outputs.bare }}" \
+            || { echo "binary does not report ${{ needs.version.outputs.bare }}:"; \
+                 ./target/release/paos version; exit 1; }
 
       - name: Package
         working-directory: paos
@@ -79,8 +149,7 @@ jobs:
           path: paos/dist/*.tar.gz
 
   publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, build]
     runs-on: ubuntu-22.04
     steps:
       # SHA256SUMS is computed HERE, once, over every platform's tarball. Computing it in
@@ -101,4 +170,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          body: ${{ github.event.head_commit.message }}
           files: dist/*

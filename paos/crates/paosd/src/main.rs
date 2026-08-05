@@ -22,7 +22,16 @@ mod handlers;
 mod tg_digest;
 mod tg_tasks;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// What this build calls itself.
+///
+/// The RELEASE tag when the release workflow set it, the crate version otherwise. Every
+/// release before this reported `v0.1.0` — including the one tagged v0.3.0 — because this
+/// read Cargo.toml, which nobody bumps. `paos version` was answering a question about the
+/// manifest while the person asking meant "which release am I running".
+pub const VERSION: &str = match option_env!("PAOS_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// Shared daemon state. The connection sits behind a mutex because there is exactly one
 /// writer by design — serialising here is what makes the `SELECT MAX(seq)+1` race the

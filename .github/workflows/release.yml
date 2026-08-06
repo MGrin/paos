@@ -117,6 +117,14 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
 
+      # The release build got slow the moment `paosd` took the `bert` feature by default:
+      # candle and its gemm kernels are a large compile, and a release-on-every-push
+      # workflow that takes half an hour per push is one nobody waits for. CI has had this
+      # cache all along; the release job never did, so it recompiled the world every time.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: paos
+
       - name: Test
         working-directory: paos
         run: cargo test --workspace --locked

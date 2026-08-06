@@ -77,46 +77,6 @@ fn load_reranker() -> Option<Arc<dyn paos_memory::Embedder>> {
     None
 }
 
-/// Wake every live session that has no listener. Called once, at startup.
-///
-/// Deliberately NOT filtered to sessions the supervisor has already flagged: `deaf_since`
-/// is only set after forty minutes of silence, and the sessions this is for went deaf
-/// seconds ago because this process replaced the one holding their connections.
-fn wake_the_deaf(conn: &Arc<Mutex<rusqlite::Connection>>) {
-    let mut g = match conn.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
-    };
-    let names: Vec<String> = g
-        .prepare("SELECT DISTINCT s.name FROM sessions s JOIN members m ON m.name = s.name \
-                  WHERE s.ended_ts IS NULL")
-        .and_then(|mut st| {
-            st.query_map([], |r| r.get::<_, String>(0))
-                .map(|it| it.filter_map(Result::ok).collect())
-        })
-        .unwrap_or_default();
-    let now = handlers::now_iso();
-    let mut woke = 0usize;
-    for name in &names {
-        // The flock is the shared truth about whether a listener is live — the push
-        // registry is empty by definition in a process that just started, so asking it
-        // would wake every session on every restart.
-        if paos_bus::readonly::is_listening(&paos_store::root(), name) {
-            continue;
-        }
-        if paos_bus::post(&mut g, "lobby", "paosd", &format!("@{name}"),
-                          "paosd restarted — your listener died with it; re-arm one",
-                          &now, true, false)
-            .is_ok()
-        {
-            woke += 1;
-        }
-    }
-    if woke > 0 {
-        eprintln!("paosd: woke {woke} session(s) whose listener died with the last daemon");
-    }
-}
-
 fn main() {
     if let Err(e) = run() {
         eprintln!("paosd: {e}");
@@ -223,22 +183,6 @@ fn run() -> io::Result<()> {
     let listener = UnixListener::bind(&sock)?;
     eprintln!("paosd: listening on {}", sock.display());
 
-    // A RESTART DEAFENS THE WHOLE FLEET, so undo it immediately.
-    //
-    // Every `paos bus listen` is a long-lived connection to this socket. Restarting the
-    // daemon drops all of them, and a session only re-arms on its next turn — so a machine
-    // where the daemon is being redeployed goes silently deaf, session by session, and
-    // stays that way until each one happens to take a turn. Measured right after ten
-    // restarts in an hour: FOUR of eight live sessions had no listener, and the operator's
-    // report was "You are NOT reachable on telegram".
-    //
-    // A wake is an urgent message addressed to the session; receiving one costs it a turn,
-    // and a turn is exactly when it re-arms. So the repair is the same verb a peer would
-    // use by hand.
-    //
-    // Best-effort and never fatal: a daemon that refuses to start because it could not
-    // wake somebody would turn a recoverable annoyance into an outage.
-    wake_the_deaf(&conn);
 
     let broadcast_wakes = std::env::var("PAOS_BUS_ALL_WAKES")
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))

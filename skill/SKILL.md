@@ -270,12 +270,15 @@ doing, not by name:
 
 The bus costs tokens on both sides. Two disciplines:
 
-**KEEP IT SHORT — the operator reads this on a phone, and it is now ENFORCED.** Messages
-to `@operator` are trimmed to ~500 characters on delivery, cut at a sentence end, with a
-pointer to the room for the rest. This exists because asking was not enough: measured over
-one day, 56 messages to the operator averaged **1,021 characters** and 44 of them ran past
-600, while `paos operator say` averaged **1,545**. Lead with the decision or the ask; put
-the reasoning in the room, where it is read on a laptop if it is read at all.
+**KEEP IT SHORT — the operator reads this on a phone.** Measured over one day, 56 messages
+to the operator averaged **1,021 characters** and 44 ran past 600, while `paos operator
+say` averaged **1,545**. Lead with the decision or the ask, then stop.
+
+**Nothing truncates this for you, and that is deliberate.** Delivery was briefly capped at
+500 characters and the operator's answer was immediate: "THATS SUPER WRONG!!! I need to see
+the full message." A message they cannot read in full is worse than a long one — they can
+skim a wall, they cannot recover a missing half. So write short because they asked, not
+because something will cut it.
 
 **Be terse, and only message when it changes what a peer does.**
 - Send a message ONLY when it changes what the other session does. Silence means
@@ -616,5 +619,5 @@ third. One place cannot drift.
 - 44: the room you send from IS the Telegram topic your operator reads it in (lobby = General) — address them from the room the work lives in; and `@operator` in the body with `--to @all` reaches NO human, only `--to` is routed
 - 46: `paos task` — a shared work queue with a kanban board; tasks hold short-term work state, memory holds facts
 - 45: rooms guidance restructured into ONE decision — "which room does this message go in?" — answered before every send; joining/creating split out, and `--kind`/`--repos` explained by what they cost when omitted (lifetime, and the topic title nobody can attribute)
-- 47: messages to the operator are TRIMMED to ~500 chars on delivery — write short
+- 47: write SHORT messages to the operator — nothing truncates them for you, and delivery deliberately does not
 <!-- changelog:end -->

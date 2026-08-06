@@ -1860,48 +1860,6 @@ fn supervise_and_alert(
 /// This table was never drained by the Rust bridge, so every `say` a session made
 /// vanished into SQLite with no error — a silent black hole on the one path a session
 /// has to volunteer information to the human.
-/// How much of a session's message reaches the phone.
-///
-/// Measured before choosing it: 56 session-to-operator messages in one day averaged 1,021
-/// characters, 44 of them over 600, and the `operator say` outbox averaged 1,545. That is
-/// roughly ninety thousand characters of prose delivered to a phone in a day, which is
-/// what the operator means by "a huge amount of text ... part of the cognitive load".
-///
-/// 500 is about a phone screen. It is enforced HERE rather than asked for in the skill
-/// because the skill has asked for brevity all along and the average is still 1,021 — a
-/// rule nobody follows is not a rule.
-const OPERATOR_MAX_CHARS: usize = 500;
-
-/// Trim a message to phone length, cutting at a sentence end rather than mid-word.
-///
-/// The remainder is NOT lost and the suffix says where it is: every message is in the
-/// room it was sent to, readable in full with `paos bus log`. Silently dropping the tail
-/// would be worse than the wall of text it replaces.
-fn for_phone(text: &str, room: &str) -> String {
-    let n = text.chars().count();
-    if n <= OPERATOR_MAX_CHARS {
-        return text.to_string();
-    }
-    let head: String = text.chars().take(OPERATOR_MAX_CHARS).collect();
-    // Prefer a sentence boundary, then any line break, then the hard cut. Only accept one
-    // in the last third, or a message whose first sentence is very short would be trimmed
-    // to almost nothing.
-    let floor = OPERATOR_MAX_CHARS * 2 / 3;
-    let cut = ['.', '!', '?', '\n']
-        .iter()
-        .filter_map(|c| head.rfind(*c))
-        .filter(|i| head[..*i].chars().count() >= floor)
-        .max()
-        .map(|i| i + 1)
-        .unwrap_or(head.len());
-    let out = format!("{}\n… +{} chars — `paos bus log {room}`",
-                      head[..cut].trim_end(), n - head[..cut].chars().count());
-    // A message barely over the cap would come out LONGER once the pointer is appended —
-    // trimming that makes the phone worse AND loses text. Caught by a test whose input was
-    // 524 characters against a 500 cap.
-    if out.chars().count() >= n { text.to_string() } else { out }
-}
-
 /// The topic a session's unsolicited message belongs in: its own work room.
 ///
 /// `lobby` is excluded because every session is in it — routing there would put every
@@ -1929,11 +1887,8 @@ fn own_room(conn: &Connection, session: &str) -> String {
 fn drain_outbox(conn: &Arc<Mutex<Connection>>, cfg: &Config) {
     let rows = { let g = lock(conn); op::unsent_outbox(&g).unwrap_or_default() };
     for (id, session, text) in rows {
-        // Trimmed for the phone. `operator say` averaged 1,545 characters here.
-        let room = { let g = lock(conn); own_room(&g, &session) };
         let body = telegram::neutralize_mentions(
-            &format!("{}\n\n— {session}", for_phone(&text, &room)),
-            cfg.operator_username.as_deref());
+            &format!("{text}\n\n— {session}"), cfg.operator_username.as_deref());
         // The SENDER'S OWN room, not a fixed one. Every `paos operator say` landed in
         // `ad-hocs` regardless of which repo the session worked in, so the operator saw
         // sessions from four repos all talking in one topic and read it as sessions
@@ -2028,10 +1983,8 @@ fn mirror(conn: &Arc<Mutex<Connection>>, cfg: &Config, limiter: &mut Limiter) {
         let tid = { let g = lock(conn); topic_for(&g, cfg, &room) };
         // Neutralise on the way OUT only: the bus keeps real handles, Telegram gets
         // readable ones — and @operator becomes a mention that actually pings.
-        // Trimmed for the phone, like the outbox: measured at 1,021 characters average
-        // across 56 messages in a day, 44 of them over 600.
         let body = telegram::neutralize_mentions(
-            &format!("{sender} → {target}\n{}", for_phone(&text, &room)),
+            &format!("{sender} → {target}\n{text}"),
             cfg.operator_username.as_deref(),
         );
         // Always audible: by construction this is now only messages meant for him.
@@ -2132,43 +2085,6 @@ mod tests {
         let c = db();
         seed_room(&c, "qbo-queries-sync", "swift-otter", true, None);
         assert_eq!(rooms_needing_topics(&c), vec!["qbo-queries-sync".to_string()]);
-    }
-
-    #[test]
-    fn a_short_message_reaches_the_phone_untouched() {
-        assert_eq!(for_phone("all green, deployed", "ad-hocs"), "all green, deployed");
-    }
-
-    #[test]
-    fn a_long_message_is_cut_at_a_sentence_and_says_where_the_rest_is() {
-        // The tail is NOT lost — every message is in the room it was sent to. Silently
-        // dropping it would be worse than the wall of text this replaces.
-        // A REALISTIC length: the measured average was 1,021 characters and the longest
-        // 2,714. An earlier version of this test used 524 against a 500 cap, which the
-        // "never lengthen" guard correctly refuses to trim at all.
-        let long = format!("{}. And more after that sentence.", "x".repeat(1500));
-        let out = for_phone(&long, "qbo-queries-sync");
-        assert!(out.chars().count() < long.chars().count());
-        assert!(out.contains("paos bus log qbo-queries-sync"), "{out}");
-        assert!(out.contains("chars"), "{out}");
-    }
-
-    #[test]
-    fn the_cut_does_not_land_mid_word() {
-        let long = "First sentence ends here. ".to_string() + &"word ".repeat(200);
-        let out = for_phone(&long, "r");
-        let head = out.split('\n').next().unwrap();
-        // Whatever the boundary was, it is not inside a token.
-        assert!(head.ends_with('.') || head.ends_with("word"), "{head}");
-    }
-
-    #[test]
-    fn a_message_whose_first_sentence_is_tiny_is_not_trimmed_to_nothing() {
-        // Without the floor, "Hi." followed by 2,000 characters would be delivered as
-        // "Hi." — technically a sentence boundary, and useless.
-        let long = "Hi. ".to_string() + &"y".repeat(2000);
-        let out = for_phone(&long, "r");
-        assert!(out.chars().count() > 300, "trimmed to {} chars", out.chars().count());
     }
 
     #[test]

@@ -943,7 +943,20 @@ fn handle_message(
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if let Some(w) = unread_room_warning(&room, readers, &rooms_with_readers(conn)) {
+    // LIVE is not the same as LISTENING, and the operator has been paying for the
+    // difference all day. A session with no listener ignores every message addressed to
+    // it, so a room full of them reads as busy and delivers nothing. Counting only live
+    // members warned about empty rooms and stayed silent about deaf ones, which is the
+    // case that actually happens.
+    let listening: i64 = conn
+        .prepare("SELECT m.name FROM members m JOIN sessions s ON s.name = m.name \
+                  WHERE m.room = ?1 AND s.ended_ts IS NULL")
+        .and_then(|mut st| {
+            st.query_map([&room], |r| r.get::<_, String>(0))
+                .map(|it| it.filter_map(Result::ok).filter(|n| listener_lock_held(n)).count() as i64)
+        })
+        .unwrap_or(readers);
+    if let Some(w) = unread_room_warning(&room, readers, listening, &rooms_with_readers(conn)) {
         reply(cfg, chat, thread_id, &w);
     }
 }
@@ -1152,9 +1165,22 @@ fn rooms_with_readers(conn: &Connection) -> Vec<(String, i64)> {
 /// that fails without saying so — except pointing the other way, from the human to us. It
 /// is worse in that direction: a session that gets no reply eventually asks again, whereas
 /// the operator has no way to discover the message was never delivered.
-fn unread_room_warning(room: &str, readers: i64, live: &[(String, i64)]) -> Option<String> {
-    if readers > 0 {
+fn unread_room_warning(room: &str, readers: i64, listening: i64, live: &[(String, i64)])
+    -> Option<String>
+{
+    if listening > 0 {
         return None;
+    }
+    // Members present but none of them listening — the case the old check missed
+    // entirely, because it asked whether anyone was ALIVE in the room rather than whether
+    // anyone could HEAR. Said separately because the remedy is different: the sessions
+    // exist and will read this when they next take a turn, so it is a delay, not a void.
+    if readers > 0 {
+        return Some(format!(
+            "⏳ Nobody in '{room}' is listening right now — {readers} session(s) are there \
+             but none has an armed listener, so this will not be seen until one takes a \
+             turn. It is stored, not lost."
+        ));
     }
     // The escalation topic gets its own answer, because "type in another topic" is exactly
     // the wrong advice there — the operator is trying to answer a question, and the room
@@ -2088,6 +2114,24 @@ mod tests {
     }
 
     #[test]
+    fn a_room_whose_sessions_are_all_deaf_says_so_instead_of_staying_quiet() {
+        // The case that actually happens, and the one the old check could not see: it
+        // asked whether anyone was ALIVE in the room, not whether anyone could HEAR. Four
+        // of eight sessions were deaf while the operator typed into their rooms.
+        let w = unread_room_warning("qbo-queries-sync", 4, 0, &[]).expect("must warn");
+        assert!(w.contains("none has an armed listener"), "{w}");
+        // Delay, not loss — the sessions exist and will read it on their next turn. Saying
+        // "NOBODY RECEIVED THAT" here would be false and would send the operator chasing
+        // a problem that resolves itself.
+        assert!(w.contains("stored, not lost"), "{w}");
+    }
+
+    #[test]
+    fn a_room_with_one_listening_session_is_not_warned_about() {
+        assert!(unread_room_warning("ad-hocs", 3, 1, &[]).is_none());
+    }
+
+    #[test]
     fn a_session_says_things_in_its_own_rooms_topic() {
         // Every `paos operator say` used to land in `ad-hocs` whatever repo the session
         // worked in, so four repos' sessions appeared to be talking in one topic. The
@@ -2188,7 +2232,7 @@ mod tests {
         // `post_as_operator` INSERT-OR-IGNOREs the room, so anything typed into a topic
         // whose room has no members is stored where nobody is — silently, forever.
         let live = [("agentic-brain-e2e".to_string(), 6), ("ad-hocs".to_string(), 3)];
-        let w = unread_room_warning("some-dead-room", 0, &live).expect("must warn");
+        let w = unread_room_warning("some-dead-room", 0, 0, &live).expect("must warn");
         assert!(w.contains("NOBODY RECEIVED THAT"), "the consequence must lead: {w}");
         assert!(w.contains("some-dead-room"), "must name the dead room: {w}");
         // Naming a dead room is only half a message — it must say where to type INSTEAD,
@@ -2197,10 +2241,10 @@ mod tests {
 
         // A room with readers is silent. This is the assertion that keeps the warning worth
         // reading: it must not fire on the normal case.
-        assert!(unread_room_warning("ad-hocs", 3, &live).is_none());
+        assert!(unread_room_warning("ad-hocs", 3, 3, &live).is_none());
 
         // Fleet entirely down: do not print an empty list and imply there is somewhere to go.
-        let w = unread_room_warning("some-dead-room", 0, &[]).expect("must still warn");
+        let w = unread_room_warning("some-dead-room", 0, 0, &[]).expect("must still warn");
         assert!(w.contains("No room currently has"), "must not offer an empty list: {w}");
     }
 
@@ -2249,7 +2293,7 @@ mod tests {
         // does not answer a question; the room they need belongs to the asking session and
         // only the escalation message knows which. So: quote-reply.
         let live = [("ad-hocs".to_string(), 3)];
-        let w = unread_room_warning("questions", 0, &live).expect("must warn");
+        let w = unread_room_warning("questions", 0, 0, &live).expect("must warn");
         assert!(w.contains("REPLY to the ❓ message"), "must give the path that works: {w}");
         assert!(!w.contains("ad-hocs"),
                 "must NOT offer other rooms — none of them answers the question: {w}");

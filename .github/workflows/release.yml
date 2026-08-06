@@ -29,13 +29,16 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  # Two pushes in quick succession would otherwise race to compute the same next version
-  # from the same latest tag, and the second would fail to create a tag that now exists.
-  # Queue them instead of cancelling: every commit on main is meant to get a release, and
-  # `cancel-in-progress` would silently skip one.
-  group: release
-  cancel-in-progress: false
+# NO CONCURRENCY GROUP, deliberately, and the first version had one.
+#
+# `group: release` with `cancel-in-progress: false` looks like "queue them all" and is
+# not: GitHub holds ONE running plus ONE pending per group and CANCELS the pending run
+# when a newer one arrives. Measured after a morning of pushes — tags v0.3.2, v0.3.3 and
+# v0.3.4 all existed while the newest published release was still v0.3.0, because every
+# build was cancelled by the next push before it could finish.
+#
+# The race it was protecting against is handled where it belongs, in the tagging step:
+# two runs that compute the same next version now retry instead of failing.
 
 jobs:
   version:
@@ -53,24 +56,8 @@ jobs:
           # v0.0.1.
           fetch-depth: 0
 
-      - name: Next version
-        id: next
-        run: |
-          set -euo pipefail
-          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
-          # No tags at all is a real state (a fresh fork), not an error.
-          if [ -z "$latest" ]; then
-            next="v0.0.1"
-          else
-            major_minor="${latest%.*}"
-            patch="${latest##*.}"
-            next="${major_minor}.$((patch + 1))"
-          fi
-          echo "tag=$next" >> "$GITHUB_OUTPUT"
-          echo "bare=${next#v}" >> "$GITHUB_OUTPUT"
-          echo "next release: $next (previous: ${latest:-none})"
-
       - name: Tag it
+        id: next
         # The commit message arrives through the ENVIRONMENT, never interpolated into the
         # script. `${{ github.event.head_commit.message }}` inside a `run:` block is
         # substituted as TEXT before bash sees it, so a multi-line message with backticks
@@ -80,14 +67,36 @@ jobs:
         # that only the maintainer can push here makes it a latent one rather than a safe
         # one.
         env:
-          TAG: ${{ steps.next.outputs.tag }}
           MSG: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$TAG"$'\n\n'"$MSG"
-          git push origin "$TAG"
+          # Compute AND claim in one retried step. Concurrent runs will compute the same
+          # next version from the same newest tag; the loser's push is rejected, so it
+          # re-reads the tags and takes the one after. Splitting compute from claim is
+          # what made a concurrency group look necessary.
+          for attempt in 1 2 3 4 5; do
+            git fetch --tags --quiet
+            latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+            # No tags at all is a real state (a fresh fork), not an error.
+            if [ -z "$latest" ]; then
+              next="v0.0.1"
+            else
+              next="${latest%.*}.$(( ${latest##*.} + 1 ))"
+            fi
+            git tag -a "$next" -m "$next"$'\n\n'"$MSG"
+            if git push origin "$next"; then
+              echo "tag=$next"        >> "$GITHUB_OUTPUT"
+              echo "bare=${next#v}"   >> "$GITHUB_OUTPUT"
+              echo "released as $next (attempt $attempt, previous ${latest:-none})"
+              exit 0
+            fi
+            echo "$next was taken while we were looking — retrying"
+            git tag -d "$next"
+          done
+          echo "could not claim a version after 5 attempts"
+          exit 1
 
   build:
     needs: version
